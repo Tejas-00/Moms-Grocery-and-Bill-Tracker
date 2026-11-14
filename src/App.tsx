@@ -1,675 +1,734 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { supabase } from './supabaseClient';
 import {
+  extractDMartBillFromImage,
   type MasterItem,
-  type ParsedBill,
-  type ParsedBillItem,
-  extractDMartBillFromImage
+  type ParsedBill
 } from './dmartParser';
-import {
-  CheckSquare,
-  ShoppingCart,
-  ScanLine,
-  BarChart3,
-  Search,
-  Plus,
-  Minus,
-  Trash2,
-  Share2,
-  Copy,
-  Check,
-  TrendingUp,
-  TrendingDown,
-  AlertCircle,
-  Sparkles,
-  Upload
-} from 'lucide-react';
 
-interface MonthlyListItem {
-  id?: string;
-  list_id?: string;
+interface ShoppingListItem {
+  id: string;
   master_item_id: string | null;
   item_name: string;
   category: string;
-  quantity: number;
+  sub_category?: string;
+  qty: number;
   unit: string;
-  is_purchased: boolean;
+  is_checked: boolean;
+  month_year: string;
 }
 
-interface SavedBill extends ParsedBill {
+interface SavedBill {
   id: string;
+  store_name: string;
+  bill_date: string;
+  month_year: string;
+  bill_number: string;
+  total_items_count: number;
+  total_qty_count: number;
+  total_amount: number;
+  total_savings: number;
+  created_at?: string;
 }
-
-const UNITS = ['kg', 'gm', 'L', 'ml', 'packet', 'pcs'];
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'select' | 'final' | 'scan' | 'analysis'>('select');
+  const [activeTab, setActiveTab] = useState<'select' | 'list' | 'scan' | 'history'>('select');
   const [selectedMonth, setSelectedMonth] = useState<string>(() => new Date().toISOString().slice(0, 7));
+
+  // Master Catalog State (All 4,358+ DMart items)
   const [catalog, setCatalog] = useState<MasterItem[]>([]);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [selectedCategory, setSelectedCategory] = useState('All');
+  const [loadingCatalog, setLoadingCatalog] = useState<boolean>(true);
 
-  const [currentListId, setCurrentListId] = useState<string | null>(null);
-  const [monthlyItems, setMonthlyItems] = useState<MonthlyListItem[]>([]);
+  // Filter States for Tab 1 (Select)
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [selectedCategory, setSelectedCategory] = useState<string>('All');
+  const [selectedSubCategory, setSelectedSubCategory] = useState<string>('All');
+  const [visibleLimit, setVisibleLimit] = useState<number>(80);
 
-  const [showAddModal, setShowAddModal] = useState(false);
-  const [newItemName, setNewItemName] = useState('');
-  const [newItemCategory, setNewItemCategory] = useState('Dals & Pulses');
-  const [newItemUnit, setNewItemUnit] = useState('kg');
+  // Add Custom Item Modal State
+  const [showAddCustomModal, setShowAddCustomModal] = useState<boolean>(false);
+  const [customItemName, setCustomItemName] = useState<string>('');
+  const [customItemCat, setCustomItemCat] = useState<string>('Grocery');
+  const [customItemSubCat, setCustomItemSubCat] = useState<string>('General');
+  const [customItemQty, setCustomItemQty] = useState<number>(1);
+  const [customItemUnit, setCustomItemUnit] = useState<string>('kg');
 
-  const [ocrProgress, setOcrProgress] = useState<number | null>(null);
+  // Monthly Shopping List State (Tab 2)
+  const [shoppingList, setShoppingList] = useState<ShoppingListItem[]>([]);
+  const [loadingList, setLoadingList] = useState<boolean>(false);
+
+  // Receipt Scanner State (Tab 3)
+  const [scanning, setScanning] = useState<boolean>(false);
+  const [scanProgress, setScanProgress] = useState<number>(0);
+  const [scanError, setScanError] = useState<string | null>(null);
   const [draftBill, setDraftBill] = useState<ParsedBill | null>(null);
+  const [savingBill, setSavingBill] = useState<boolean>(false);
+
+  // Bill History State (Tab 4)
   const [savedBills, setSavedBills] = useState<SavedBill[]>([]);
-  const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const [selectedHistoryBillItems, setSelectedHistoryBillItems] = useState<any[] | null>(null);
+  const [activeHistoryBillId, setActiveHistoryBillId] = useState<string | null>(null);
+
+  // Toast Notification
+  const [toast, setToast] = useState<string | null>(null);
 
   const showToast = (msg: string) => {
-    setToastMsg(msg);
-    setTimeout(() => setToastMsg(null), 3500);
+    setToast(msg);
+    setTimeout(() => setToast(null), 2800);
+  };
+
+  // 1. Fetch ALL 4,358+ Master Items from Supabase using range pagination (bypasses 1000-row limit)
+  const fetchMasterCatalog = async () => {
+    setLoadingCatalog(true);
+    try {
+      let allItems: MasterItem[] = [];
+      let from = 0;
+      const step = 1000;
+
+      while (true) {
+        const { data, error } = await supabase
+          .from('master_items')
+          .select('*')
+          .order('name', { ascending: true })
+          .range(from, from + step - 1);
+
+        if (error) throw error;
+        if (!data || data.length === 0) break;
+
+        allItems = [...allItems, ...(data as MasterItem[])];
+        if (data.length < step) break;
+        from += step;
+      }
+
+      setCatalog(allItems);
+    } catch (err: any) {
+      console.error('Error loading master catalog:', err.message);
+      showToast('Failed to load catalog from Supabase');
+    } finally {
+      setLoadingCatalog(false);
+    }
+  };
+
+  // 2. Fetch Monthly Shopping List
+  const fetchShoppingList = async (month: string) => {
+    setLoadingList(true);
+    try {
+      const { data, error } = await supabase
+        .from('shopping_list')
+        .select('*')
+        .eq('month_year', month)
+        .order('category', { ascending: true });
+
+      if (!error && data) {
+        setShoppingList(data as ShoppingListItem[]);
+      }
+    } catch (err) {
+      console.warn('Shopping list fetch warning:', err);
+    } finally {
+      setLoadingList(false);
+    }
+  };
+
+  // 3. Fetch Saved Bills History
+  const fetchBillsHistory = async (month: string) => {
+    try {
+      const { data, error } = await supabase
+        .from('bills')
+        .select('*')
+        .eq('month_year', month)
+        .order('bill_date', { ascending: false });
+
+      if (!error && data) {
+        setSavedBills(data as SavedBill[]);
+      }
+    } catch (err) {
+      console.warn('Bills fetch warning:', err);
+    }
   };
 
   useEffect(() => {
-    fetchCatalog();
-    fetchAllBills();
+    fetchMasterCatalog();
   }, []);
 
   useEffect(() => {
-    fetchMonthlyList(selectedMonth);
+    fetchShoppingList(selectedMonth);
+    fetchBillsHistory(selectedMonth);
   }, [selectedMonth]);
 
-  async function fetchCatalog() {
-    const { data } = await supabase.from('master_items').select('*').order('category').order('name');
-    if (data) setCatalog(data);
-  }
+  // Reset pagination limit when filters change
+  useEffect(() => {
+    setVisibleLimit(80);
+  }, [selectedCategory, selectedSubCategory, searchQuery]);
 
-  async function fetchMonthlyList(monthYear: string) {
-    const { data: listRow } = await supabase
-      .from('monthly_lists')
-      .upsert({ month_year: monthYear, status: 'active' }, { onConflict: 'month_year' })
-      .select()
-      .single();
+  // Helper: Clean SubCategory label (e.g., "Grocery/Dry Fruits" -> "Dry Fruits")
+  const formatSubCategoryLabel = (sub?: string) => {
+    if (!sub || sub === 'General') return 'General';
+    return sub.includes('/') ? sub.split('/').pop()!.trim() : sub;
+  };
 
-    if (listRow) {
-      setCurrentListId(listRow.id);
-      const { data: items } = await supabase
-        .from('monthly_list_items')
-        .select('*')
-        .eq('list_id', listRow.id)
-        .order('category');
-      setMonthlyItems(items || []);
-    }
-  }
-
-  async function fetchAllBills() {
-    const { data: billsData } = await supabase
-      .from('bills')
-      .select('*')
-      .order('bill_date', { ascending: false });
-
-    if (!billsData) return;
-
-    const fullBills: SavedBill[] = [];
-    for (const b of billsData) {
-      const { data: bItems } = await supabase.from('bill_items').select('*').eq('bill_id', b.id);
-      fullBills.push({
-        ...b,
-        items: bItems || []
-      });
-    }
-    setSavedBills(fullBills);
-  }
-
+  // Tier 1: Unique Categories with Item Counts
   const categories = useMemo(() => {
-    const set = new Set<string>(['All']);
-    catalog.forEach(i => set.add(i.category));
-    return Array.from(set);
+    const counts: Record<string, number> = {};
+    for (const item of catalog) {
+      const cat = item.category || 'General';
+      counts[cat] = (counts[cat] || 0) + 1;
+    }
+    const sortedCats = Object.keys(counts).sort((a, b) => counts[b] - counts[a]);
+    return ['All', ...sortedCats];
   }, [catalog]);
 
+  // Tier 2: Unique Sub-Categories for the Currently Selected Category
+  const subCategories = useMemo(() => {
+    const baseList =
+      selectedCategory === 'All'
+        ? catalog
+        : catalog.filter(item => (item.category || 'General') === selectedCategory);
+
+    const counts: Record<string, number> = {};
+    for (const item of baseList) {
+      const sub = item.sub_category || 'General';
+      counts[sub] = (counts[sub] || 0) + 1;
+    }
+    const sortedSubs = Object.keys(counts).sort((a, b) => counts[b] - counts[a]);
+    return ['All', ...sortedSubs];
+  }, [catalog, selectedCategory]);
+
+  // Filtered Catalog Items based on Category + SubCategory + Search Bar
   const filteredCatalog = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
     return catalog.filter(item => {
-      const matchesCat = selectedCategory === 'All' || item.category === selectedCategory;
-      const matchesSearch = item.name.toLowerCase().includes(searchQuery.toLowerCase());
-      return matchesCat && matchesSearch;
+      const itemCat = item.category || 'General';
+      const itemSub = item.sub_category || 'General';
+
+      const matchesCat = selectedCategory === 'All' || itemCat === selectedCategory;
+      const matchesSub = selectedSubCategory === 'All' || itemSub === selectedSubCategory;
+      const matchesSearch =
+        q === '' ||
+        item.name.toLowerCase().includes(q) ||
+        itemCat.toLowerCase().includes(q) ||
+        itemSub.toLowerCase().includes(q) ||
+        item.dmart_aliases?.some(alias => alias.toLowerCase().includes(q));
+
+      return matchesCat && matchesSub && matchesSearch;
     });
-  }, [catalog, selectedCategory, searchQuery]);
+  }, [catalog, selectedCategory, selectedSubCategory, searchQuery]);
 
-  async function toggleMasterItem(item: MasterItem) {
-    if (!currentListId) return;
-    const existing = monthlyItems.find(m => m.item_name === item.name);
+  // Fast Lookup Map of Items Already in This Month's Shopping List
+  const selectedMap = useMemo(() => {
+    const map = new Map<string, ShoppingListItem>();
+    for (const li of shoppingList) {
+      map.set(li.item_name.toLowerCase(), li);
+    }
+    return map;
+  }, [shoppingList]);
 
-    if (existing && existing.id) {
-      await supabase.from('monthly_list_items').delete().eq('id', existing.id);
-      setMonthlyItems(prev => prev.filter(m => m.id !== existing.id));
+  // Toggle or Add Item from Catalog into Monthly Shopping List
+  const handleToggleCatalogItem = async (item: MasterItem) => {
+    const existing = selectedMap.get(item.name.toLowerCase());
+
+    if (existing) {
+      // Remove from this month's list
+      setShoppingList(prev => prev.filter(i => i.id !== existing.id));
+      await supabase.from('shopping_list').delete().eq('id', existing.id);
+      showToast(`Removed ${item.name}`);
     } else {
-      const newEntry: MonthlyListItem = {
-        list_id: currentListId,
+      const newEntry = {
         master_item_id: item.id,
         item_name: item.name,
-        category: item.category,
-        quantity: Number(item.default_qty) || 1,
+        category: item.category || 'General',
+        qty: item.default_qty || 1,
         unit: item.default_unit || 'kg',
-        is_purchased: false
+        is_checked: false,
+        month_year: selectedMonth
       };
-      const { data } = await supabase.from('monthly_list_items').insert(newEntry).select().single();
-      if (data) setMonthlyItems(prev => [...prev, data]);
+
+      const { data, error } = await supabase
+        .from('shopping_list')
+        .insert([newEntry])
+        .select()
+        .single();
+
+      if (!error && data) {
+        setShoppingList(prev => [...prev, data as ShoppingListItem]);
+        showToast(`Added ${item.name} to list`);
+      } else {
+        // Fallback local state if table lacks column
+        setShoppingList(prev => [
+          ...prev,
+          { ...newEntry, id: `local_${Date.now()}` } as ShoppingListItem
+        ]);
+        showToast(`Added ${item.name}`);
+      }
     }
-  }
+  };
 
-  async function updateItemQtyOrUnit(item: MonthlyListItem, newQty: number, newUnit: string) {
-    if (!item.id || newQty <= 0) return;
-    const roundedQty = Math.round(newQty * 100) / 100;
-    await supabase
-      .from('monthly_list_items')
-      .update({ quantity: roundedQty, unit: newUnit })
-      .eq('id', item.id);
+  // Update Qty or Unit in Shopping List
+  const handleUpdateShoppingItem = async (id: string, qty: number, unit: string) => {
+    if (qty <= 0) return;
+    setShoppingList(prev => prev.map(it => (it.id === id ? { ...it, qty, unit } : it)));
+    await supabase.from('shopping_list').update({ qty, unit }).eq('id', id);
+  };
 
-    setMonthlyItems(prev =>
-      prev.map(m => (m.id === item.id ? { ...m, quantity: roundedQty, unit: newUnit } : m))
+  // Toggle Checked in Shopping List
+  const handleToggleChecked = async (item: ShoppingListItem) => {
+    const nextState = !item.is_checked;
+    setShoppingList(prev =>
+      prev.map(it => (it.id === item.id ? { ...it, is_checked: nextState } : it))
     );
-  }
+    await supabase.from('shopping_list').update({ is_checked: nextState }).eq('id', item.id);
+  };
 
-  async function togglePurchasedCheck(item: MonthlyListItem) {
-    if (!item.id) return;
-    const nextVal = !item.is_purchased;
-    await supabase.from('monthly_list_items').update({ is_purchased: nextVal }).eq('id', item.id);
-    setMonthlyItems(prev => prev.map(m => (m.id === item.id ? { ...m, is_purchased: nextVal } : m)));
-  }
+  // Delete Item from Shopping List
+  const handleDeleteShoppingItem = async (id: string) => {
+    setShoppingList(prev => prev.filter(it => it.id !== id));
+    await supabase.from('shopping_list').delete().eq('id', id);
+  };
 
-  async function removeMonthlyItem(id?: string) {
-    if (!id) return;
-    await supabase.from('monthly_list_items').delete().eq('id', id);
-    setMonthlyItems(prev => prev.filter(m => m.id !== id));
-  }
+  // Add New Custom Item to Master Catalog + Shopping List
+  const handleAddCustomMasterItem = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!customItemName.trim()) return;
 
-  async function handleAddCustomMasterItem() {
-    if (!newItemName.trim()) return;
+    const payload = {
+      name: customItemName.trim(),
+      category: customItemCat.trim() || 'Grocery',
+      sub_category: customItemSubCat.trim() || 'General',
+      default_qty: Number(customItemQty) || 1,
+      default_unit: customItemUnit || 'kg',
+      dmart_aliases: [customItemName.trim().toUpperCase()]
+    };
+
     const { data, error } = await supabase
       .from('master_items')
-      .insert({
-        name: newItemName.trim(),
-        category: newItemCategory,
-        default_unit: newItemUnit,
-        default_qty: 1,
-        dmart_aliases: [newItemName.trim().toUpperCase()]
-      })
+      .upsert(payload, { onConflict: 'name' })
       .select()
       .single();
 
     if (!error && data) {
-      setCatalog(prev => [...prev, data]);
-      await toggleMasterItem(data);
-      setNewItemName('');
-      setShowAddModal(false);
-      showToast(`Added "${data.name}" to Catalog!`);
+      const added = data as MasterItem;
+      setCatalog(prev => [added, ...prev]);
+      await handleToggleCatalogItem(added);
+      setCustomItemName('');
+      setShowAddCustomModal(false);
+    } else {
+      showToast(`Error adding item: ${error?.message || 'Unknown error'}`);
     }
-  }
+  };
 
-  function generateWhatsAppText(): string {
-    const grouped: Record<string, MonthlyListItem[]> = {};
-    monthlyItems.forEach(item => {
-      if (!grouped[item.category]) grouped[item.category] = [];
-      grouped[item.category].push(item);
-    });
-
-    let text = `🛒 *Household Grocery List (${selectedMonth})*\n\n`;
-    Object.entries(grouped).forEach(([cat, items]) => {
-      text += `*${cat}*\n`;
-      items.forEach(i => {
-        text += `• ${i.item_name} - ${i.quantity} ${i.unit}${i.is_purchased ? ' ✅' : ''}\n`;
-      });
-      text += '\n';
-    });
-    return text.trim();
-  }
-
-  function handleShareWhatsApp() {
-    const text = generateWhatsAppText();
-    const url = `https://wa.me/?text=${encodeURIComponent(text)}`;
-    window.open(url, '_blank');
-  }
-
-  function handleCopyList() {
-    navigator.clipboard.writeText(generateWhatsAppText());
-    showToast('Grocery list copied to clipboard!');
-  }
-
-  async function handleBillPhotoUpload(e: React.ChangeEvent<HTMLInputElement>) {
+  // Handle Receipt Image Upload & AI OCR Scan
+  const handleReceiptUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    setOcrProgress(5);
+
+    setScanning(true);
+    setScanProgress(10);
+    setScanError(null);
+    setDraftBill(null);
+
     try {
-      const parsed = await extractDMartBillFromImage(file, catalog, pct => setOcrProgress(pct));
+      const parsed = await extractDMartBillFromImage(file, catalog, pct => {
+        setScanProgress(pct);
+      });
       setDraftBill(parsed);
-      if (parsed.items.length > 0) {
-        showToast(`Extracted ${parsed.items.length} items from receipt!`);
-      } else {
-        showToast('No tabular items detected. Please try a clearer image or add rows manually.');
-      }
     } catch (err: any) {
-      console.error('Receipt extraction failed:', err);
-      showToast(err?.message || 'Failed to extract bill from photo.');
+      console.error('Receipt scan failed:', err);
+      setScanError(err?.message || 'Failed to scan receipt. Please try a clearer photo.');
     } finally {
-      setOcrProgress(null);
-      e.target.value = '';
+      setScanning(false);
     }
-  }
+  };
 
-  async function saveVerifiedBillToDb() {
-    if (!draftBill || draftBill.items.length === 0) return;
+  // Save Verified Bill + Self-Learning DMart Aliases to Supabase
+  const saveVerifiedBillToDb = async () => {
+    if (!draftBill) return;
+    setSavingBill(true);
 
-    const totalVal = Number(draftBill.items.reduce((s, i) => s + Number(i.total_value), 0).toFixed(2));
-    const totalQty = Number(draftBill.items.reduce((s, i) => s + Number(i.qty_or_kg), 0).toFixed(3));
+    try {
+      // 1. Insert Bill Header
+      const { data: billData, error: billErr } = await supabase
+        .from('bills')
+        .insert([
+          {
+            store_name: draftBill.store_name,
+            bill_date: draftBill.bill_date,
+            month_year: draftBill.month_year,
+            bill_number: draftBill.bill_number,
+            total_items_count: draftBill.items.length,
+            total_qty_count: draftBill.total_qty_count,
+            total_amount: draftBill.total_amount,
+            total_savings: draftBill.total_savings
+          }
+        ])
+        .select()
+        .single();
 
-    const { data: billRow, error } = await supabase
-      .from('bills')
-      .insert({
-        store_name: draftBill.store_name,
-        bill_date: draftBill.bill_date,
-        month_year: draftBill.bill_date.slice(0, 7),
-        bill_number: draftBill.bill_number,
-        total_items_count: draftBill.items.length,
-        total_qty_count: totalQty,
-        total_amount: totalVal,
-        total_savings: draftBill.total_savings
-      })
-      .select()
-      .single();
+      if (billErr) throw billErr;
 
-    if (error || !billRow) {
-      showToast('Error saving bill to database');
+      // 2. Insert Bill Line Items
+      if (billData && draftBill.items.length > 0) {
+        const linePayloads = draftBill.items.map(it => ({
+          bill_id: billData.id,
+          hsn_code: it.hsn_code,
+          raw_particulars: it.raw_particulars,
+          matched_item_name: it.matched_item_name,
+          master_item_id: it.master_item_id,
+          qty_or_kg: it.qty_or_kg,
+          unit_rate: it.unit_rate,
+          total_value: it.total_value
+        }));
+
+        await supabase.from('bill_items').insert(linePayloads);
+      }
+
+      // 3. Self-Learning Alias Engine: Bind Raw DMart Receipt Text to Master Item
+      for (const it of draftBill.items) {
+        const master = catalog.find(
+          c => c.name.toLowerCase() === it.matched_item_name.toLowerCase()
+        );
+        if (
+          master &&
+          it.raw_particulars &&
+          !master.dmart_aliases?.includes(it.raw_particulars)
+        ) {
+          const updatedAliases = [...(master.dmart_aliases || []), it.raw_particulars];
+          await supabase
+            .from('master_items')
+            .update({ dmart_aliases: updatedAliases })
+            .eq('id', master.id);
+        }
+      }
+
+      showToast('Bill saved & DMart aliases learned!');
+      setDraftBill(null);
+      fetchBillsHistory(selectedMonth);
+      fetchMasterCatalog();
+      setActiveTab('history');
+    } catch (err: any) {
+      showToast(`Save failed: ${err.message}`);
+    } finally {
+      setSavingBill(false);
+    }
+  };
+
+  // Load Line Items for a Historical Bill
+  const handleInspectBill = async (billId: string) => {
+    if (activeHistoryBillId === billId) {
+      setActiveHistoryBillId(null);
+      setSelectedHistoryBillItems(null);
       return;
     }
+    setActiveHistoryBillId(billId);
+    const { data } = await supabase.from('bill_items').select('*').eq('bill_id', billId);
+    setSelectedHistoryBillItems(data || []);
+  };
 
-    const itemsPayload = draftBill.items.map(it => ({
-      bill_id: billRow.id,
-      hsn_code: it.hsn_code,
-      raw_particulars: it.raw_particulars,
-      master_item_id: it.master_item_id,
-      matched_item_name: it.matched_item_name,
-      qty_or_kg: Number(it.qty_or_kg),
-      unit_rate: Number(it.unit_rate),
-      total_value: Number(it.total_value)
-    }));
-
-    await supabase.from('bill_items').insert(itemsPayload);
-
-    for (const it of draftBill.items) {
-      const master = catalog.find(c => c.name === it.matched_item_name);
-      if (master && it.raw_particulars && !master.dmart_aliases?.includes(it.raw_particulars)) {
-        const updatedAliases = [...(master.dmart_aliases || []), it.raw_particulars];
-        await supabase.from('master_items').update({ dmart_aliases: updatedAliases }).eq('id', master.id);
-      }
-    }
-
-    const billMonth = draftBill.bill_date.slice(0, 7);
-    setSelectedMonth(billMonth);
-    setDraftBill(null);
-    await fetchAllBills();
-    showToast('Bill saved to database!');
-    setActiveTab('analysis');
-  }
-
-  async function deleteSavedBill(billId: string) {
-    await supabase.from('bills').delete().eq('id', billId);
-    await fetchAllBills();
-    showToast('Bill deleted');
-  }
-
-  const analysis = useMemo(() => {
-    const currentMonthBills = savedBills.filter(b => b.month_year === selectedMonth);
-    const currentBill = currentMonthBills[0] || null;
-    const previousBill = savedBills.find(b => b.month_year < selectedMonth) || null;
-
-    const priceShotUp: Array<{ name: string; oldRate: number; newRate: number; diff: number; pct: number }> = [];
-    const priceDeclined: Array<{ name: string; oldRate: number; newRate: number; diff: number; pct: number }> = [];
-    const purchasedExtra: ParsedBillItem[] = [];
-    const notPurchased: MonthlyListItem[] = [];
-
-    if (currentBill) {
-      if (previousBill) {
-        currentBill.items.forEach(currItem => {
-          const prevItem = previousBill.items.find(
-            p => p.matched_item_name.toLowerCase() === currItem.matched_item_name.toLowerCase()
-          );
-          if (prevItem && prevItem.unit_rate > 0) {
-            const diff = Number((currItem.unit_rate - prevItem.unit_rate).toFixed(2));
-            const pct = Number(((diff / prevItem.unit_rate) * 100).toFixed(1));
-            if (diff > 0.05) {
-              priceShotUp.push({
-                name: currItem.matched_item_name,
-                oldRate: prevItem.unit_rate,
-                newRate: currItem.unit_rate,
-                diff,
-                pct
-              });
-            } else if (diff < -0.05) {
-              priceDeclined.push({
-                name: currItem.matched_item_name,
-                oldRate: prevItem.unit_rate,
-                newRate: currItem.unit_rate,
-                diff: Math.abs(diff),
-                pct: Math.abs(pct)
-              });
-            }
-          }
-        });
-      }
-
-      const plannedNames = new Set(monthlyItems.map(m => m.item_name.toLowerCase()));
-      const billedNames = new Set(currentBill.items.map(b => b.matched_item_name.toLowerCase()));
-
-      currentBill.items.forEach(bItem => {
-        if (!plannedNames.has(bItem.matched_item_name.toLowerCase())) {
-          purchasedExtra.push(bItem);
-        }
-      });
-
-      monthlyItems.forEach(mItem => {
-        if (!billedNames.has(mItem.item_name.toLowerCase())) {
-          notPurchased.push(mItem);
-        }
-      });
-    }
-
-    return {
-      currentBill,
-      previousBill,
-      priceShotUp,
-      priceDeclined,
-      purchasedExtra,
-      notPurchased
-    };
-  }, [savedBills, selectedMonth, monthlyItems]);
+  // Share Shopping List on WhatsApp
+  const shareListOnWhatsApp = () => {
+    if (shoppingList.length === 0) return;
+    const lines = [`*Mom's DMart Grocery List (${selectedMonth})*`, ''];
+    shoppingList.forEach((it, idx) => {
+      const check = it.is_checked ? '✅' : '⬜';
+      lines.push(`${idx + 1}. ${check} *${it.item_name}* — ${it.qty} ${it.unit}`);
+    });
+    const url = `https://wa.me/?text=${encodeURIComponent(lines.join('\n'))}`;
+    window.open(url, '_blank');
+  };
 
   return (
-    <div className="max-w-md mx-auto min-h-screen bg-slate-50 pb-28 shadow-xl border-x border-slate-200 flex flex-col">
-      <header className="bg-emerald-700 text-white px-4 py-3.5 sticky top-0 z-30 shadow-md flex items-center justify-between">
+    <div className="min-h-screen bg-slate-50 pb-24 font-sans text-slate-900">
+      {/* Top App Header */}
+      <header className="sticky top-0 z-30 bg-emerald-700 text-white shadow-md px-4 py-3 flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-bold tracking-tight">Mom's Grocery & Bills</h1>
-          <p className="text-xs text-emerald-100">Household List & Price Tracker</p>
+          <h1 className="text-lg font-bold tracking-tight flex items-center gap-2">
+            🛒 Mom's Grocery & DMart Tracker
+          </h1>
+          <p className="text-xs text-emerald-100">
+            {catalog.length.toLocaleString()} Official DMart Items Loaded
+          </p>
         </div>
+
         <input
           type="month"
           value={selectedMonth}
           onChange={e => setSelectedMonth(e.target.value)}
-          className="bg-emerald-800 text-white text-sm font-semibold px-2.5 py-1.5 rounded-lg border border-emerald-500 focus:outline-none"
+          className="bg-emerald-800 text-white text-xs font-semibold px-2.5 py-1.5 rounded-lg border border-emerald-500 focus:outline-none"
         />
       </header>
 
-      {toastMsg && (
-        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 bg-slate-900 text-white text-sm font-medium px-4 py-2.5 rounded-xl shadow-lg flex items-center gap-2 max-w-xs text-center">
-          <Sparkles className="w-4 h-4 text-emerald-400 shrink-0" />
-          <span>{toastMsg}</span>
+      {/* Toast Notification */}
+      {toast && (
+        <div className="fixed bottom-20 left-1/2 -translate-x-1/2 z-50 bg-slate-900 text-white text-xs font-medium px-4 py-2.5 rounded-full shadow-lg">
+          {toast}
         </div>
       )}
 
+      {/* ==================== TAB 1: SELECT ITEMS (DMART MASTER CATALOG) ==================== */}
       {activeTab === 'select' && (
-        <div className="p-3 space-y-3 flex-1">
+        <div className="p-3 max-w-3xl mx-auto space-y-3">
+          {/* Search Bar + Custom Item Button */}
           <div className="flex gap-2">
             <div className="relative flex-1">
-              <Search className="w-5 h-5 text-slate-400 absolute left-3 top-3" />
               <input
                 type="text"
-                placeholder="Search items..."
+                placeholder={`Search ${catalog.length.toLocaleString()} DMart items, brands, categories...`}
                 value={searchQuery}
                 onChange={e => setSearchQuery(e.target.value)}
-                className="w-full pl-10 pr-3 py-2.5 bg-white border border-slate-300 rounded-xl text-base focus:outline-none focus:border-emerald-600"
+                className="w-full pl-9 pr-8 py-2.5 bg-white border border-slate-300 rounded-xl text-sm shadow-sm focus:ring-2 focus:ring-emerald-600 focus:outline-none"
               />
+              <span className="absolute left-3 top-2.5 text-slate-400">🔍</span>
+              {searchQuery && (
+                <button
+                  onClick={() => setSearchQuery('')}
+                  className="absolute right-2.5 top-2 text-slate-400 hover:text-slate-600 text-sm font-bold px-1"
+                >
+                  ✕
+                </button>
+              )}
             </div>
             <button
-              onClick={() => setShowAddModal(true)}
-              className="bg-emerald-600 text-white px-3.5 rounded-xl font-semibold text-sm flex items-center gap-1 shrink-0 active:scale-95"
+              onClick={() => setShowAddCustomModal(true)}
+              className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold px-3 py-2 rounded-xl shadow-sm whitespace-nowrap"
             >
-              <Plus className="w-5 h-5" /> New
+              + New Item
             </button>
           </div>
 
-          <div className="flex gap-2 overflow-x-auto pb-1.5 no-scrollbar">
-            {categories.map(cat => (
-              <button
-                key={cat}
-                onClick={() => setSelectedCategory(cat)}
-                className={`px-3.5 py-2 rounded-full text-sm font-semibold whitespace-nowrap transition ${
-                  selectedCategory === cat
-                    ? 'bg-emerald-700 text-white shadow-sm'
-                    : 'bg-white text-slate-700 border border-slate-200'
-                }`}
-              >
-                {cat}
-              </button>
-            ))}
-          </div>
-
-          <div className="space-y-2">
-            {filteredCatalog.map(item => {
-              const selectedEntry = monthlyItems.find(m => m.item_name === item.name);
-              const isSelected = Boolean(selectedEntry);
-
-              return (
-                <div
-                  key={item.id}
-                  className={`p-3.5 rounded-xl border transition ${
-                    isSelected
-                      ? 'bg-emerald-50/80 border-emerald-600 shadow-xs'
-                      : 'bg-white border-slate-200'
+          {/* Tier 1: Main DMart Category Filter Pills */}
+          <div className="bg-white p-2.5 rounded-xl border border-slate-200 shadow-sm">
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                1. Category ({categories.length - 1})
+              </span>
+              {selectedCategory !== 'All' && (
+                <button
+                  onClick={() => {
+                    setSelectedCategory('All');
+                    setSelectedSubCategory('All');
+                  }}
+                  className="text-[11px] text-emerald-600 font-semibold"
+                >
+                  Reset Filter
+                </button>
+              )}
+            </div>
+            <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-none">
+              {categories.map(cat => (
+                <button
+                  key={cat}
+                  onClick={() => {
+                    setSelectedCategory(cat);
+                    setSelectedSubCategory('All');
+                  }}
+                  className={`px-3 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap transition ${
+                    selectedCategory === cat
+                      ? 'bg-emerald-600 text-white shadow-sm'
+                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
                   }`}
                 >
-                  <div
-                    onClick={() => toggleMasterItem(item)}
-                    className="flex items-center justify-between cursor-pointer"
-                  >
-                    <div>
-                      <p className="text-base font-bold text-slate-900">{item.name}</p>
-                      <p className="text-xs text-slate-500">{item.category}</p>
-                    </div>
-                    <div
-                      className={`w-7 h-7 rounded-lg flex items-center justify-center border-2 ${
-                        isSelected
-                          ? 'bg-emerald-600 border-emerald-600 text-white'
-                          : 'border-slate-300 bg-slate-50'
-                      }`}
-                    >
-                      {isSelected && <Check className="w-5 h-5 stroke-[3]" />}
-                    </div>
-                  </div>
-
-                  {isSelected && selectedEntry && (
-                    <div className="mt-3 pt-2.5 border-t border-emerald-200 flex items-center justify-between gap-2">
-                      <span className="text-xs font-semibold text-emerald-900">Qty & Unit:</span>
-                      <div className="flex items-center gap-1.5">
-                        <button
-                          onClick={() =>
-                            updateItemQtyOrUnit(
-                              selectedEntry,
-                              Math.max(0.5, Number(selectedEntry.quantity) - 0.5),
-                              selectedEntry.unit
-                            )
-                          }
-                          className="w-9 h-9 rounded-lg bg-white border border-emerald-300 flex items-center justify-center text-emerald-800 font-bold active:bg-emerald-100"
-                        >
-                          <Minus className="w-4 h-4" />
-                        </button>
-                        <input
-                          type="number"
-                          step="0.5"
-                          value={selectedEntry.quantity}
-                          onChange={e =>
-                            updateItemQtyOrUnit(
-                              selectedEntry,
-                              parseFloat(e.target.value) || 1,
-                              selectedEntry.unit
-                            )
-                          }
-                          className="w-16 h-9 text-center font-bold bg-white border border-emerald-300 rounded-lg text-base"
-                        />
-                        <button
-                          onClick={() =>
-                            updateItemQtyOrUnit(
-                              selectedEntry,
-                              Number(selectedEntry.quantity) + 0.5,
-                              selectedEntry.unit
-                            )
-                          }
-                          className="w-9 h-9 rounded-lg bg-white border border-emerald-300 flex items-center justify-center text-emerald-800 font-bold active:bg-emerald-100"
-                        >
-                          <Plus className="w-4 h-4" />
-                        </button>
-                        <select
-                          value={selectedEntry.unit}
-                          onChange={e =>
-                            updateItemQtyOrUnit(selectedEntry, selectedEntry.quantity, e.target.value)
-                          }
-                          className="h-9 px-2 bg-white border border-emerald-300 rounded-lg font-semibold text-sm text-slate-800"
-                        >
-                          {UNITS.map(u => (
-                            <option key={u} value={u}>
-                              {u}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+                  {cat}
+                </button>
+              ))}
+            </div>
           </div>
 
-          {monthlyItems.length > 0 && (
-            <div className="sticky bottom-20 bg-slate-900 text-white p-3.5 rounded-2xl shadow-lg flex items-center justify-between">
-              <div>
-                <p className="text-sm font-bold">{monthlyItems.length} Items Selected</p>
-                <p className="text-xs text-slate-300">For {selectedMonth}</p>
-              </div>
-              <button
-                onClick={() => setActiveTab('final')}
-                className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold px-4 py-2.5 rounded-xl text-sm"
-              >
-                View Final List →
-              </button>
+          {/* Tier 2: Sub-Category Filter Pills (Always available & dynamically scoped to Category) */}
+          <div className="bg-emerald-50/70 p-2.5 rounded-xl border border-emerald-200">
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-800">
+                2. Sub-Category {selectedCategory !== 'All' ? `in ${selectedCategory}` : '(All Aisles)'}
+              </span>
+              {selectedSubCategory !== 'All' && (
+                <button
+                  onClick={() => setSelectedSubCategory('All')}
+                  className="text-[11px] text-emerald-700 font-semibold"
+                >
+                  Show All Sub-Categories
+                </button>
+              )}
             </div>
+            <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-none">
+              {subCategories.map(subCat => (
+                <button
+                  key={subCat}
+                  onClick={() => setSelectedSubCategory(subCat)}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-medium whitespace-nowrap transition ${
+                    selectedSubCategory === subCat
+                      ? 'bg-emerald-700 text-white shadow-sm'
+                      : 'bg-white text-slate-700 border border-emerald-200 hover:bg-emerald-100'
+                  }`}
+                >
+                  {subCat === 'All' ? 'All Sub-Categories' : formatSubCategoryLabel(subCat)}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Filter Summary Bar */}
+          <div className="flex items-center justify-between px-1 text-xs text-slate-500 font-medium">
+            <span>
+              Showing <strong>{Math.min(visibleLimit, filteredCatalog.length)}</strong> of{' '}
+              <strong>{filteredCatalog.length.toLocaleString()}</strong> matching items
+            </span>
+            <span>
+              Selected this month: <strong className="text-emerald-700">{shoppingList.length}</strong>
+            </span>
+          </div>
+
+          {/* Master Catalog Grid */}
+          {loadingCatalog ? (
+            <div className="py-16 text-center text-slate-500 text-sm">
+              Loading 4,358 DMart products from Supabase...
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              {filteredCatalog.slice(0, visibleLimit).map(item => {
+                const isSelected = selectedMap.has(item.name.toLowerCase());
+                return (
+                  <div
+                    key={item.id || item.name}
+                    onClick={() => handleToggleCatalogItem(item)}
+                    className={`p-3 rounded-xl border transition cursor-pointer flex items-center justify-between gap-2 ${
+                      isSelected
+                        ? 'bg-emerald-50 border-emerald-500 shadow-sm'
+                        : 'bg-white border-slate-200 hover:border-emerald-400'
+                    }`}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="font-semibold text-sm text-slate-900 truncate">{item.name}</p>
+                      <div className="flex flex-wrap items-center gap-1 mt-1">
+                        <span className="text-[10px] bg-slate-100 text-slate-700 px-2 py-0.5 rounded font-medium">
+                          {item.category || 'General'}
+                        </span>
+                        {item.sub_category && (
+                          <span className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded font-medium">
+                            {formatSubCategoryLabel(item.sub_category)}
+                          </span>
+                        )}
+                        <span className="text-[10px] text-slate-400 ml-1">
+                          • {item.default_qty} {item.default_unit}
+                        </span>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold shrink-0 ${
+                        isSelected
+                          ? 'bg-emerald-600 text-white'
+                          : 'bg-slate-100 text-slate-700 hover:bg-emerald-100'
+                      }`}
+                    >
+                      {isSelected ? '✓ Added' : '+ Add'}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Load More Button for Smooth Scrolling on Mobile */}
+          {filteredCatalog.length > visibleLimit && (
+            <button
+              onClick={() => setVisibleLimit(prev => prev + 100)}
+              className="w-full py-3 bg-white border border-slate-300 rounded-xl text-xs font-bold text-emerald-700 shadow-sm hover:bg-slate-50"
+            >
+              Show More Items ({filteredCatalog.length - visibleLimit} remaining)
+            </button>
           )}
         </div>
       )}
 
-      {activeTab === 'final' && (
-        <div className="p-3 space-y-4 flex-1">
-          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs flex items-center justify-between">
+      {/* ==================== TAB 2: MONTHLY SHOPPING LIST ==================== */}
+      {activeTab === 'list' && (
+        <div className="p-3 max-w-3xl mx-auto space-y-3">
+          <div className="bg-white p-3.5 rounded-xl border border-slate-200 flex items-center justify-between">
             <div>
-              <h2 className="text-base font-bold text-slate-900">Final List ({selectedMonth})</h2>
+              <h2 className="font-bold text-base">Monthly Grocery List ({selectedMonth})</h2>
               <p className="text-xs text-slate-500">
-                {monthlyItems.filter(i => i.is_purchased).length} of {monthlyItems.length} items picked
+                {shoppingList.filter(i => i.is_checked).length} of {shoppingList.length} items bought
               </p>
             </div>
-            <div className="flex gap-2">
+            {shoppingList.length > 0 && (
               <button
-                onClick={handleCopyList}
-                className="p-2.5 bg-slate-100 text-slate-700 rounded-xl font-semibold text-sm flex items-center gap-1"
+                onClick={shareListOnWhatsApp}
+                className="bg-green-600 text-white text-xs font-bold px-3.5 py-2 rounded-xl shadow-sm"
               >
-                <Copy className="w-4 h-4" /> Copy
+                Share on WhatsApp
               </button>
-              <button
-                onClick={handleShareWhatsApp}
-                className="px-3.5 py-2.5 bg-emerald-600 text-white rounded-xl font-bold text-sm flex items-center gap-1.5 shadow-xs"
-              >
-                <Share2 className="w-4 h-4" /> WhatsApp
-              </button>
-            </div>
+            )}
           </div>
 
-          {monthlyItems.length === 0 ? (
-            <div className="text-center py-12 bg-white rounded-2xl border border-slate-200 p-6">
-              <ShoppingCart className="w-12 h-12 text-slate-300 mx-auto mb-2" />
-              <p className="font-bold text-slate-700">No items selected for {selectedMonth}</p>
-              <p className="text-sm text-slate-500 mt-1">
-                Go to "Select" and tap the items needed this month.
-              </p>
+          {loadingList ? (
+            <div className="py-12 text-center text-sm text-slate-400">Loading list...</div>
+          ) : shoppingList.length === 0 ? (
+            <div className="bg-white p-8 rounded-xl border text-center space-y-2">
+              <p className="text-sm text-slate-500">No items added for {selectedMonth} yet.</p>
               <button
                 onClick={() => setActiveTab('select')}
-                className="mt-4 bg-emerald-600 text-white font-bold px-5 py-2.5 rounded-xl text-sm"
+                className="bg-emerald-600 text-white text-xs font-bold px-4 py-2 rounded-lg"
               >
-                Select Items Now
+                Browse DMart Catalog
               </button>
             </div>
           ) : (
-            <div className="space-y-2.5">
-              {monthlyItems.map(item => (
+            <div className="space-y-2">
+              {shoppingList.map(item => (
                 <div
                   key={item.id}
-                  className={`p-3.5 rounded-xl border bg-white flex flex-col gap-2.5 ${
-                    item.is_purchased ? 'opacity-60 border-slate-200' : 'border-slate-300'
+                  className={`p-3 rounded-xl border flex items-center justify-between gap-2 ${
+                    item.is_checked ? 'bg-slate-100 border-slate-200 opacity-75' : 'bg-white border-slate-200'
                   }`}
                 >
-                  <div className="flex items-center justify-between">
-                    <div
-                      onClick={() => togglePurchasedCheck(item)}
-                      className="flex items-center gap-3 cursor-pointer flex-1"
-                    >
-                      <div
-                        className={`w-6 h-6 rounded-md flex items-center justify-center border-2 ${
-                          item.is_purchased
-                            ? 'bg-emerald-600 border-emerald-600 text-white'
-                            : 'border-slate-400'
+                  <div
+                    onClick={() => handleToggleChecked(item)}
+                    className="flex items-center gap-2.5 flex-1 cursor-pointer min-w-0"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={item.is_checked}
+                      onChange={() => {}}
+                      className="h-4 w-4 text-emerald-600 rounded"
+                    />
+                    <div className="min-w-0">
+                      <p
+                        className={`text-sm font-semibold truncate ${
+                          item.is_checked ? 'line-through text-slate-400' : 'text-slate-800'
                         }`}
                       >
-                        {item.is_purchased && <Check className="w-4 h-4 stroke-[3]" />}
-                      </div>
-                      <div>
-                        <p
-                          className={`text-base font-bold ${
-                            item.is_purchased ? 'line-through text-slate-400' : 'text-slate-900'
-                          }`}
-                        >
-                          {item.item_name}
-                        </p>
-                        <p className="text-xs text-slate-500">{item.category}</p>
-                      </div>
+                        {item.item_name}
+                      </p>
+                      <span className="text-[10px] text-slate-500">{item.category}</span>
                     </div>
-
-                    <button
-                      onClick={() => removeMonthlyItem(item.id)}
-                      className="p-2 text-red-500 hover:bg-red-50 rounded-lg"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
                   </div>
 
-                  <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
-                    <button
-                      onClick={() =>
-                        updateItemQtyOrUnit(item, Math.max(0.5, Number(item.quantity) - 0.5), item.unit)
-                      }
-                      className="w-8 h-8 rounded-lg bg-slate-100 flex items-center justify-center font-bold"
-                    >
-                      -
-                    </button>
+                  <div className="flex items-center gap-1.5">
                     <input
                       type="number"
-                      step="0.5"
-                      value={item.quantity}
+                      step="0.25"
+                      value={item.qty}
                       onChange={e =>
-                        updateItemQtyOrUnit(item, parseFloat(e.target.value) || 1, item.unit)
+                        handleUpdateShoppingItem(item.id, parseFloat(e.target.value) || 1, item.unit)
                       }
-                      className="w-16 h-8 text-center font-bold border border-slate-300 rounded-lg text-sm"
+                      className="w-16 p-1.5 border rounded-lg text-xs text-center font-semibold"
                     />
-                    <button
-                      onClick={() =>
-                        updateItemQtyOrUnit(item, Number(item.quantity) + 0.5, item.unit)
-                      }
-                      className="w-8 h-8 rounded-lg bg-slate-100 flex items-center justify-center font-bold"
-                    >
-                      +
-                    </button>
                     <select
                       value={item.unit}
-                      onChange={e => updateItemQtyOrUnit(item, item.quantity, e.target.value)}
-                      className="h-8 px-2 bg-slate-100 border border-slate-300 rounded-lg text-sm font-semibold"
+                      onChange={e => handleUpdateShoppingItem(item.id, item.qty, e.target.value)}
+                      className="p-1.5 border rounded-lg text-xs bg-slate-50"
                     >
-                      {UNITS.map(u => (
-                        <option key={u} value={u}>
-                          {u}
-                        </option>
-                      ))}
+                      <option value="kg">kg</option>
+                      <option value="gm">gm</option>
+                      <option value="L">L</option>
+                      <option value="ml">ml</option>
+                      <option value="pcs">pcs</option>
+                      <option value="packet">pkt</option>
                     </select>
+                    <button
+                      onClick={() => handleDeleteShoppingItem(item.id)}
+                      className="text-red-500 hover:bg-red-50 p-1.5 rounded-lg text-xs font-bold"
+                    >
+                      ✕
+                    </button>
                   </div>
                 </div>
               ))}
@@ -678,499 +737,254 @@ export default function App() {
         </div>
       )}
 
+      {/* ==================== TAB 3: AI DMART RECEIPT SCANNER ==================== */}
       {activeTab === 'scan' && (
-        <div className="p-3 space-y-4 flex-1">
-          <div className="bg-white p-4 rounded-2xl border border-slate-200 space-y-3">
-            <h2 className="text-base font-bold text-slate-900">Upload Shopping Bill</h2>
-            <p className="text-xs text-slate-600">
-              Upload a photo of your physical shopping bill to extract items, quantities, and unit rates automatically.
+        <div className="p-3 max-w-3xl mx-auto space-y-4">
+          <div className="bg-white p-5 rounded-xl border border-slate-200 text-center space-y-3">
+            <h2 className="font-bold text-base">Scan DMart Bill (AI + Self-Learning)</h2>
+            <p className="text-xs text-slate-500">
+              Take a clear photo of your DMart receipt. The app extracts items and automatically teaches your catalog DMart's short names.
             </p>
 
-            <label className="w-full py-4 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl flex items-center justify-center gap-2 cursor-pointer shadow-sm">
-              <Upload className="w-5 h-5" />
-              <span>Take Photo / Upload Bill Image</span>
+            <label className="inline-block bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold px-5 py-3 rounded-xl shadow cursor-pointer">
+              📸 Take Photo / Upload Receipt
               <input
                 type="file"
                 accept="image/*"
-                onChange={handleBillPhotoUpload}
+                onChange={handleReceiptUpload}
                 className="hidden"
               />
             </label>
 
-            {ocrProgress !== null && (
-              <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl">
-                <p className="text-xs font-bold text-emerald-900 mb-1">
-                  Reading Receipt... {ocrProgress}%
-                </p>
-                <div className="w-full bg-emerald-200 h-2.5 rounded-full overflow-hidden">
+            {scanning && (
+              <div className="space-y-1.5 pt-2">
+                <div className="w-full bg-slate-200 h-2.5 rounded-full overflow-hidden">
                   <div
                     className="bg-emerald-600 h-full transition-all"
-                    style={{ width: `${ocrProgress}%` }}
+                    style={{ width: `${scanProgress}%` }}
                   />
                 </div>
+                <p className="text-xs text-emerald-700 font-semibold">
+                  Scanning Receipt... {scanProgress}%
+                </p>
+              </div>
+            )}
+
+            {scanError && (
+              <div className="p-3 bg-red-50 text-red-700 rounded-lg text-xs font-medium">
+                {scanError}
               </div>
             )}
           </div>
 
           {draftBill && (
-            <div className="bg-white p-4 rounded-2xl border-2 border-emerald-600 space-y-3">
+            <div className="bg-white p-4 rounded-xl border border-emerald-300 space-y-3 shadow-sm">
               <div className="flex items-center justify-between border-b pb-2">
                 <div>
-                  <h3 className="font-bold text-slate-900 text-base">Verify Extracted Bill</h3>
+                  <h3 className="font-bold text-sm text-emerald-900">
+                    Verified Bill: {draftBill.store_name} ({draftBill.bill_date})
+                  </h3>
                   <p className="text-xs text-slate-500">
-                    {draftBill.items.length} items • Saved ₹{draftBill.total_savings} on MRP
+                    {draftBill.items.length} items • Total: ₹{draftBill.total_amount.toFixed(2)}
                   </p>
-                </div>
-                <input
-                  type="date"
-                  value={draftBill.bill_date}
-                  onChange={e =>
-                    setDraftBill({
-                      ...draftBill,
-                      bill_date: e.target.value,
-                      month_year: e.target.value.slice(0, 7)
-                    })
-                  }
-                  className="border border-slate-300 rounded-lg px-2 py-1 text-xs font-bold"
-                />
-              </div>
-
-              <div className="space-y-2.5 max-h-96 overflow-y-auto pr-1">
-                {draftBill.items.map((item, idx) => (
-                  <div key={idx} className="p-2.5 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs font-mono text-slate-500 truncate">
-                        Raw: {item.raw_particulars}
-                      </span>
-                      <button
-                        onClick={() => {
-                          const updated = draftBill.items.filter((_, i) => i !== idx);
-                          setDraftBill({ ...draftBill, items: updated });
-                        }}
-                        className="text-red-500 text-xs font-bold"
-                      >
-                        Remove
-                      </button>
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      <select
-                        value={item.matched_item_name}
-                        onChange={e => {
-                          const updated = [...draftBill.items];
-                          const found = catalog.find(c => c.name === e.target.value);
-                          updated[idx] = {
-                            ...item,
-                            matched_item_name: e.target.value,
-                            master_item_id: found ? found.id : null
-                          };
-                          setDraftBill({ ...draftBill, items: updated });
-                        }}
-                        className="flex-1 bg-white border border-slate-300 rounded-lg px-2 py-1.5 text-sm font-bold text-slate-900"
-                      >
-                        <option value={item.matched_item_name}>{item.matched_item_name}</option>
-                        {catalog.map(c => (
-                          <option key={c.id} value={c.name}>
-                            {c.name} ({c.category})
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div className="grid grid-cols-3 gap-2 text-xs">
-                      <div>
-                        <label className="text-slate-500 block">Qty/Kg</label>
-                        <input
-                          type="number"
-                          step="0.001"
-                          value={item.qty_or_kg}
-                          onChange={e => {
-                            const qty = parseFloat(e.target.value) || 0;
-                            const updated = [...draftBill.items];
-                            updated[idx] = {
-                              ...item,
-                              qty_or_kg: qty,
-                              total_value: Number((qty * item.unit_rate).toFixed(2))
-                            };
-                            setDraftBill({ ...draftBill, items: updated });
-                          }}
-                          className="w-full font-bold bg-white border border-slate-300 rounded px-2 py-1"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-slate-500 block">Rate (₹/unit)</label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          value={item.unit_rate}
-                          onChange={e => {
-                            const rate = parseFloat(e.target.value) || 0;
-                            const updated = [...draftBill.items];
-                            updated[idx] = {
-                              ...item,
-                              unit_rate: rate,
-                              total_value: Number((item.qty_or_kg * rate).toFixed(2))
-                            };
-                            setDraftBill({ ...draftBill, items: updated });
-                          }}
-                          className="w-full font-bold bg-white border border-slate-300 rounded px-2 py-1"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-slate-500 block">Value (₹)</label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          value={item.total_value}
-                          onChange={e => {
-                            const val = parseFloat(e.target.value) || 0;
-                            const updated = [...draftBill.items];
-                            updated[idx] = { ...item, total_value: val };
-                            setDraftBill({ ...draftBill, items: updated });
-                          }}
-                          className="w-full font-bold bg-white border border-slate-300 rounded px-2 py-1"
-                        />
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <button
-                onClick={() => {
-                  setDraftBill({
-                    ...draftBill,
-                    items: [
-                      ...draftBill.items,
-                      {
-                        hsn_code: '',
-                        raw_particulars: '',
-                        matched_item_name: catalog[0]?.name || '',
-                        master_item_id: catalog[0]?.id || null,
-                        qty_or_kg: 1,
-                        unit_rate: 0,
-                        total_value: 0
-                      }
-                    ]
-                  });
-                }}
-                className="w-full py-2 border border-dashed border-emerald-600 text-emerald-700 font-bold rounded-xl text-sm"
-              >
-                + Add Bill Row
-              </button>
-
-              <div className="pt-2 border-t flex items-center justify-between">
-                <div>
-                  <span className="text-xs text-slate-500 block">Total Bill Value</span>
-                  <span className="text-lg font-extrabold text-slate-900">
-                    ₹{draftBill.items.reduce((s, i) => s + Number(i.total_value), 0).toFixed(2)}
-                  </span>
                 </div>
                 <button
                   onClick={saveVerifiedBillToDb}
-                  className="bg-emerald-600 text-white font-bold px-5 py-3 rounded-xl text-sm shadow-md"
+                  disabled={savingBill}
+                  className="bg-emerald-600 text-white text-xs font-bold px-4 py-2 rounded-lg shadow"
                 >
-                  Save Verified Bill ✓
+                  {savingBill ? 'Saving...' : 'Save Verified Bill ✓'}
                 </button>
               </div>
+
+              <div className="space-y-2 max-h-96 overflow-y-auto">
+                {draftBill.items.map((it, idx) => (
+                  <div key={idx} className="p-2.5 bg-slate-50 rounded-lg border text-xs space-y-1">
+                    <div className="flex justify-between font-bold text-slate-800">
+                      <span>Raw Bill: {it.raw_particulars}</span>
+                      <span>₹{it.total_value}</span>
+                    </div>
+                    <div className="flex items-center justify-between text-slate-500">
+                      <span>
+                        Matched Catalog: <strong className="text-emerald-700">{it.matched_item_name}</strong>
+                      </span>
+                      <span>
+                        {it.qty_or_kg} × ₹{it.unit_rate}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </div>
       )}
 
-      {activeTab === 'analysis' && (
-        <div className="p-3 space-y-4 flex-1">
-          {!analysis.currentBill ? (
-            <div className="bg-white p-6 rounded-2xl border border-slate-200 text-center space-y-2">
-              <BarChart3 className="w-12 h-12 text-slate-300 mx-auto" />
-              <h3 className="font-bold text-base text-slate-800">No Bill Found for {selectedMonth}</h3>
-              <p className="text-xs text-slate-500">
-                Upload a bill in the "Scan Bill" tab or change the month selector at the top right to view saved bills.
+      {/* ==================== TAB 4: PAST BILLS & EXPENSE HISTORY ==================== */}
+      {activeTab === 'history' && (
+        <div className="p-3 max-w-3xl mx-auto space-y-3">
+          <div className="bg-white p-4 rounded-xl border border-slate-200 flex justify-between items-center">
+            <div>
+              <h2 className="font-bold text-base">Bills History ({selectedMonth})</h2>
+              <p className="text-xs text-slate-500">{savedBills.length} bills recorded</p>
+            </div>
+            <div className="text-right">
+              <p className="text-xs text-slate-500">Monthly Spend</p>
+              <p className="text-lg font-extrabold text-emerald-700">
+                ₹{savedBills.reduce((s, b) => s + (Number(b.total_amount) || 0), 0).toFixed(2)}
               </p>
             </div>
-          ) : (
-            <>
-              <div className="grid grid-cols-2 gap-2.5">
-                <div className="bg-white p-3.5 rounded-2xl border border-slate-200">
-                  <span className="text-xs text-slate-500 font-medium">Total Spent ({selectedMonth})</span>
-                  <p className="text-xl font-extrabold text-slate-900 mt-0.5">
-                    ₹{analysis.currentBill.total_amount}
-                  </p>
-                  {analysis.previousBill && (
-                    <p className="text-xs font-semibold text-slate-600 mt-1">
-                      Prev ({analysis.previousBill.month_year}): ₹{analysis.previousBill.total_amount}
-                    </p>
-                  )}
-                </div>
-                <div className="bg-emerald-50 p-3.5 rounded-2xl border border-emerald-200">
-                  <span className="text-xs text-emerald-800 font-medium">Saved on MRP</span>
-                  <p className="text-xl font-extrabold text-emerald-700 mt-0.5">
-                    ₹{analysis.currentBill.total_savings}
-                  </p>
-                  <p className="text-xs text-emerald-700 mt-1">
-                    {analysis.currentBill.items.length} items billed
-                  </p>
-                </div>
-              </div>
+          </div>
 
-              <div className="bg-white p-4 rounded-2xl border border-slate-200 space-y-2.5">
-                <div className="flex items-center gap-2 text-red-600 font-bold text-sm">
-                  <TrendingUp className="w-5 h-5" />
-                  <span>Price Shoot Up (vs Previous Bill)</span>
-                </div>
-                {analysis.priceShotUp.length === 0 ? (
+          {savedBills.map(bill => (
+            <div key={bill.id} className="bg-white p-3.5 rounded-xl border border-slate-200 space-y-2">
+              <div
+                onClick={() => handleInspectBill(bill.id)}
+                className="flex justify-between items-center cursor-pointer"
+              >
+                <div>
+                  <p className="font-bold text-sm text-slate-800">
+                    {bill.store_name} — {bill.bill_date}
+                  </p>
                   <p className="text-xs text-slate-500">
-                    {analysis.previousBill
-                      ? 'No item unit-rate increases compared to previous bill.'
-                      : 'Upload at least two months of bills to compare unit rate increases.'}
+                    {bill.total_items_count} items • Saved ₹{bill.total_savings || 0}
                   </p>
-                ) : (
-                  analysis.priceShotUp.map((it, i) => (
-                    <div
-                      key={i}
-                      className="flex items-center justify-between p-2.5 bg-red-50/70 rounded-xl border border-red-200"
-                    >
-                      <div>
-                        <p className="font-bold text-sm text-slate-900">{it.name}</p>
-                        <p className="text-xs text-slate-600">
-                          ₹{it.oldRate}/unit → <b>₹{it.newRate}/unit</b>
-                        </p>
-                      </div>
-                      <span className="bg-red-600 text-white text-xs font-bold px-2.5 py-1 rounded-lg">
-                        +₹{it.diff} (+{it.pct}%)
-                      </span>
-                    </div>
-                  ))
-                )}
-              </div>
-
-              <div className="bg-white p-4 rounded-2xl border border-slate-200 space-y-2.5">
-                <div className="flex items-center gap-2 text-emerald-700 font-bold text-sm">
-                  <TrendingDown className="w-5 h-5" />
-                  <span>Price Declined (vs Previous Bill)</span>
                 </div>
-                {analysis.priceDeclined.length === 0 ? (
-                  <p className="text-xs text-slate-500">
-                    {analysis.previousBill
-                      ? 'No item unit-rate drops compared to previous bill.'
-                      : 'Upload at least two months of bills to compare unit rate drops.'}
-                  </p>
-                ) : (
-                  analysis.priceDeclined.map((it, i) => (
-                    <div
-                      key={i}
-                      className="flex items-center justify-between p-2.5 bg-emerald-50 rounded-xl border border-emerald-200"
-                    >
-                      <div>
-                        <p className="font-bold text-sm text-slate-900">{it.name}</p>
-                        <p className="text-xs text-slate-600">
-                          ₹{it.oldRate}/unit → <b>₹{it.newRate}/unit</b>
-                        </p>
-                      </div>
-                      <span className="bg-emerald-600 text-white text-xs font-bold px-2.5 py-1 rounded-lg">
-                        -₹{it.diff} (-{it.pct}%)
-                      </span>
-                    </div>
-                  ))
-                )}
-              </div>
-
-              <div className="bg-white p-4 rounded-2xl border border-slate-200 space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2 text-amber-700 font-bold text-sm">
-                    <ShoppingCart className="w-5 h-5" />
-                    <span>Purchased Extra (Not in Planned List)</span>
-                  </div>
-                  <span className="text-xs font-bold text-amber-800 bg-amber-100 px-2 py-0.5 rounded-md">
-                    {analysis.purchasedExtra.length} items
+                <div className="text-right">
+                  <p className="font-bold text-sm text-emerald-700">₹{bill.total_amount}</p>
+                  <span className="text-[10px] text-blue-600 font-semibold">
+                    {activeHistoryBillId === bill.id ? 'Hide Items ▲' : 'View Items ▼'}
                   </span>
                 </div>
-                {analysis.purchasedExtra.length === 0 ? (
-                  <p className="text-xs text-slate-500">All billed items were on the planned list.</p>
-                ) : (
-                  <div className="space-y-1.5 max-h-60 overflow-y-auto">
-                    {analysis.purchasedExtra.map((it, i) => (
-                      <div
-                        key={i}
-                        className="flex items-center justify-between p-2 bg-amber-50/60 rounded-lg border border-amber-200 text-xs"
-                      >
-                        <div>
-                          <span className="font-bold text-slate-800">{it.matched_item_name}</span>
-                          <span className="text-slate-500 ml-1">
-                            ({it.qty_or_kg} × ₹{it.unit_rate})
-                          </span>
-                        </div>
-                        <span className="font-bold text-slate-900">₹{it.total_value}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
               </div>
 
-              <div className="bg-white p-4 rounded-2xl border border-slate-200 space-y-2.5">
-                <div className="flex items-center gap-2 text-slate-700 font-bold text-sm">
-                  <AlertCircle className="w-5 h-5 text-slate-600" />
-                  <span>Not Purchased (In List, Missing on Bill)</span>
+              {activeHistoryBillId === bill.id && selectedHistoryBillItems && (
+                <div className="border-t pt-2 space-y-1 text-xs">
+                  {selectedHistoryBillItems.map((bi, i) => (
+                    <div key={i} className="flex justify-between py-1 border-b border-slate-100">
+                      <span className="font-medium text-slate-700">
+                        {bi.matched_item_name || bi.raw_particulars}
+                      </span>
+                      <span className="text-slate-500">
+                        {bi.qty_or_kg} × ₹{bi.unit_rate} = <strong>₹{bi.total_value}</strong>
+                      </span>
+                    </div>
+                  ))}
                 </div>
-                {analysis.notPurchased.length === 0 ? (
-                  <p className="text-xs text-slate-500">All planned items for {selectedMonth} were purchased.</p>
-                ) : (
-                  <div className="space-y-1.5">
-                    {analysis.notPurchased.map((it, i) => (
-                      <div
-                        key={i}
-                        className="flex items-center justify-between p-2 bg-slate-100 rounded-lg text-xs"
-                      >
-                        <span className="font-bold text-slate-800">{it.item_name}</span>
-                        <span className="text-slate-600 font-semibold">
-                          Planned: {it.quantity} {it.unit}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </>
-          )}
-
-          {savedBills.length > 0 && (
-            <div className="bg-white p-4 rounded-2xl border border-slate-200 space-y-2">
-              <h4 className="font-bold text-xs text-slate-500 uppercase tracking-wider">Saved Bills History</h4>
-              {savedBills.map(b => (
-                <div
-                  key={b.id}
-                  className="flex items-center justify-between p-2.5 rounded-xl border border-slate-200 text-xs"
-                >
-                  <div
-                    onClick={() => setSelectedMonth(b.month_year)}
-                    className="cursor-pointer flex-1"
-                  >
-                    <p className="font-bold text-slate-900">
-                      {b.store_name} ({b.bill_date})
-                    </p>
-                    <p className="text-slate-500">
-                      {b.items.length} items • Total: ₹{b.total_amount}
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => deleteSavedBill(b.id)}
-                    className="p-1.5 text-red-500 hover:bg-red-50 rounded-lg"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                </div>
-              ))}
+              )}
             </div>
-          )}
+          ))}
         </div>
       )}
 
-      {showAddModal && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white w-full max-w-sm rounded-2xl p-5 space-y-4 shadow-xl">
-            <h3 className="text-base font-bold text-slate-900">Add Item to Master Catalog</h3>
-            <div>
-              <label className="text-xs font-bold text-slate-600 block mb-1">Item Name</label>
+      {/* Modal: Add Custom Item to Master Catalog */}
+      {showAddCustomModal && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+          <form
+            onSubmit={handleAddCustomMasterItem}
+            className="bg-white rounded-2xl p-5 w-full max-w-md space-y-3 shadow-xl"
+          >
+            <h3 className="font-bold text-base">Add Custom Item to Master Catalog</h3>
+            <input
+              type="text"
+              required
+              placeholder="Item Name (e.g., Kolhapuri Jaggery)"
+              value={customItemName}
+              onChange={e => setCustomItemName(e.target.value)}
+              className="w-full p-2.5 border rounded-xl text-sm"
+            />
+            <div className="grid grid-cols-2 gap-2">
               <input
                 type="text"
-                placeholder="e.g., Kashmiri Mirch Powder"
-                value={newItemName}
-                onChange={e => setNewItemName(e.target.value)}
-                className="w-full border border-slate-300 rounded-xl px-3 py-2.5 text-base"
+                placeholder="Category (e.g., Grocery)"
+                value={customItemCat}
+                onChange={e => setCustomItemCat(e.target.value)}
+                className="p-2.5 border rounded-xl text-sm"
+              />
+              <input
+                type="text"
+                placeholder="Sub-Category (e.g., Dry Fruits)"
+                value={customItemSubCat}
+                onChange={e => setCustomItemSubCat(e.target.value)}
+                className="p-2.5 border rounded-xl text-sm"
               />
             </div>
-            <div>
-              <label className="text-xs font-bold text-slate-600 block mb-1">Category</label>
+            <div className="grid grid-cols-2 gap-2">
+              <input
+                type="number"
+                step="0.25"
+                value={customItemQty}
+                onChange={e => setCustomItemQty(parseFloat(e.target.value) || 1)}
+                className="p-2.5 border rounded-xl text-sm"
+              />
               <select
-                value={newItemCategory}
-                onChange={e => setNewItemCategory(e.target.value)}
-                className="w-full border border-slate-300 rounded-xl px-3 py-2.5 text-sm font-semibold"
+                value={customItemUnit}
+                onChange={e => setCustomItemUnit(e.target.value)}
+                className="p-2.5 border rounded-xl text-sm"
               >
-                {categories
-                  .filter(c => c !== 'All')
-                  .map(c => (
-                    <option key={c} value={c}>
-                      {c}
-                    </option>
-                  ))}
+                <option value="kg">kg</option>
+                <option value="gm">gm</option>
+                <option value="L">L</option>
+                <option value="ml">ml</option>
+                <option value="pcs">pcs</option>
               </select>
             </div>
-            <div>
-              <label className="text-xs font-bold text-slate-600 block mb-1">Default Unit</label>
-              <select
-                value={newItemUnit}
-                onChange={e => setNewItemUnit(e.target.value)}
-                className="w-full border border-slate-300 rounded-xl px-3 py-2.5 text-sm font-semibold"
-              >
-                {UNITS.map(u => (
-                  <option key={u} value={u}>
-                    {u}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="flex gap-2 pt-2">
+            <div className="flex justify-end gap-2 pt-2">
               <button
-                onClick={() => setShowAddModal(false)}
-                className="flex-1 py-2.5 bg-slate-100 text-slate-700 font-bold rounded-xl text-sm"
+                type="button"
+                onClick={() => setShowAddCustomModal(false)}
+                className="px-4 py-2 text-xs font-semibold text-slate-600"
               >
                 Cancel
               </button>
               <button
-                onClick={handleAddCustomMasterItem}
-                className="flex-1 py-2.5 bg-emerald-600 text-white font-bold rounded-xl text-sm"
+                type="submit"
+                className="px-4 py-2 bg-emerald-600 text-white text-xs font-bold rounded-xl"
               >
-                Save Item
+                Save & Add
               </button>
             </div>
-          </div>
+          </form>
         </div>
       )}
 
-      <nav className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-md bg-white border-t border-slate-200 grid grid-cols-4 py-1.5 z-40 shadow-lg">
+      {/* Bottom Navigation Bar */}
+      <nav className="fixed bottom-0 left-0 right-0 z-40 bg-white border-t border-slate-200 flex justify-around py-2 shadow-lg">
         <button
           onClick={() => setActiveTab('select')}
-          className={`flex flex-col items-center py-1.5 ${
-            activeTab === 'select' ? 'text-emerald-700 font-bold' : 'text-slate-500'
+          className={`flex flex-col items-center text-xs font-bold ${
+            activeTab === 'select' ? 'text-emerald-600' : 'text-slate-400'
           }`}
         >
-          <CheckSquare className="w-5 h-5" />
-          <span className="text-xs mt-1">1. Select</span>
+          <span className="text-lg">🏬</span>
+          <span>1. Catalog</span>
         </button>
-
         <button
-          onClick={() => setActiveTab('final')}
-          className={`flex flex-col items-center py-1.5 relative ${
-            activeTab === 'final' ? 'text-emerald-700 font-bold' : 'text-slate-500'
+          onClick={() => setActiveTab('list')}
+          className={`flex flex-col items-center text-xs font-bold ${
+            activeTab === 'list' ? 'text-emerald-600' : 'text-slate-400'
           }`}
         >
-          <ShoppingCart className="w-5 h-5" />
-          {monthlyItems.length > 0 && (
-            <span className="absolute top-0.5 right-6 bg-emerald-600 text-white text-[10px] font-bold px-1.5 rounded-full">
-              {monthlyItems.length}
-            </span>
-          )}
-          <span className="text-xs mt-1">2. Final List</span>
+          <span className="text-lg">📝</span>
+          <span>2. List ({shoppingList.length})</span>
         </button>
-
         <button
           onClick={() => setActiveTab('scan')}
-          className={`flex flex-col items-center py-1.5 ${
-            activeTab === 'scan' ? 'text-emerald-700 font-bold' : 'text-slate-500'
+          className={`flex flex-col items-center text-xs font-bold ${
+            activeTab === 'scan' ? 'text-emerald-600' : 'text-slate-400'
           }`}
         >
-          <ScanLine className="w-5 h-5" />
-          <span className="text-xs mt-1">3. Scan Bill</span>
+          <span className="text-lg">📸</span>
+          <span>3. Scan Bill</span>
         </button>
-
         <button
-          onClick={() => setActiveTab('analysis')}
-          className={`flex flex-col items-center py-1.5 ${
-            activeTab === 'analysis' ? 'text-emerald-700 font-bold' : 'text-slate-500'
+          onClick={() => setActiveTab('history')}
+          className={`flex flex-col items-center text-xs font-bold ${
+            activeTab === 'history' ? 'text-emerald-600' : 'text-slate-400'
           }`}
         >
-          <BarChart3 className="w-5 h-5" />
-          <span className="text-xs mt-1">4. Analysis</span>
+          <span className="text-lg">📊</span>
+          <span>4. History</span>
         </button>
       </nav>
     </div>

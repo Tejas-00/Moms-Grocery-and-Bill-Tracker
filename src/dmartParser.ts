@@ -29,6 +29,7 @@ export interface MasterItem {
   id: string;
   name: string;
   category: string;
+  sub_category?: string;
   default_unit: string;
   default_qty: number;
   dmart_aliases: string[];
