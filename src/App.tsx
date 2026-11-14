@@ -35,17 +35,14 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'select' | 'list' | 'scan' | 'history'>('select');
   const [selectedMonth, setSelectedMonth] = useState<string>(() => new Date().toISOString().slice(0, 7));
 
-  // Master Catalog State (All 4,358+ DMart items)
   const [catalog, setCatalog] = useState<MasterItem[]>([]);
   const [loadingCatalog, setLoadingCatalog] = useState<boolean>(true);
 
-  // Filter States for Tab 1 (Select)
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [selectedSubCategory, setSelectedSubCategory] = useState<string>('All');
   const [visibleLimit, setVisibleLimit] = useState<number>(80);
 
-  // Add Custom Item Modal State
   const [showAddCustomModal, setShowAddCustomModal] = useState<boolean>(false);
   const [customItemName, setCustomItemName] = useState<string>('');
   const [customItemCat, setCustomItemCat] = useState<string>('Grocery');
@@ -53,23 +50,19 @@ export default function App() {
   const [customItemQty, setCustomItemQty] = useState<number>(1);
   const [customItemUnit, setCustomItemUnit] = useState<string>('kg');
 
-  // Monthly Shopping List State (Tab 2)
   const [shoppingList, setShoppingList] = useState<ShoppingListItem[]>([]);
   const [loadingList, setLoadingList] = useState<boolean>(false);
 
-  // Receipt Scanner State (Tab 3)
   const [scanning, setScanning] = useState<boolean>(false);
   const [scanProgress, setScanProgress] = useState<number>(0);
   const [scanError, setScanError] = useState<string | null>(null);
   const [draftBill, setDraftBill] = useState<ParsedBill | null>(null);
   const [savingBill, setSavingBill] = useState<boolean>(false);
 
-  // Bill History State (Tab 4)
   const [savedBills, setSavedBills] = useState<SavedBill[]>([]);
   const [selectedHistoryBillItems, setSelectedHistoryBillItems] = useState<any[] | null>(null);
   const [activeHistoryBillId, setActiveHistoryBillId] = useState<string | null>(null);
 
-  // Toast Notification
   const [toast, setToast] = useState<string | null>(null);
 
   const showToast = (msg: string) => {
@@ -77,7 +70,6 @@ export default function App() {
     setTimeout(() => setToast(null), 2800);
   };
 
-  // 1. Fetch ALL 4,358+ Master Items from Supabase using range pagination (bypasses 1000-row limit)
   const fetchMasterCatalog = async () => {
     setLoadingCatalog(true);
     try {
@@ -109,7 +101,6 @@ export default function App() {
     }
   };
 
-  // 2. Fetch Monthly Shopping List
   const fetchShoppingList = async (month: string) => {
     setLoadingList(true);
     try {
@@ -129,7 +120,6 @@ export default function App() {
     }
   };
 
-  // 3. Fetch Saved Bills History
   const fetchBillsHistory = async (month: string) => {
     try {
       const { data, error } = await supabase
@@ -155,18 +145,15 @@ export default function App() {
     fetchBillsHistory(selectedMonth);
   }, [selectedMonth]);
 
-  // Reset pagination limit when filters change
   useEffect(() => {
     setVisibleLimit(80);
   }, [selectedCategory, selectedSubCategory, searchQuery]);
 
-  // Helper: Clean SubCategory label (e.g., "Grocery/Dry Fruits" -> "Dry Fruits")
   const formatSubCategoryLabel = (sub?: string) => {
     if (!sub || sub === 'General') return 'General';
     return sub.includes('/') ? sub.split('/').pop()!.trim() : sub;
   };
 
-  // Tier 1: Unique Categories with Item Counts
   const categories = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const item of catalog) {
@@ -177,7 +164,6 @@ export default function App() {
     return ['All', ...sortedCats];
   }, [catalog]);
 
-  // Tier 2: Unique Sub-Categories for the Currently Selected Category
   const subCategories = useMemo(() => {
     const baseList =
       selectedCategory === 'All'
@@ -193,9 +179,13 @@ export default function App() {
     return ['All', ...sortedSubs];
   }, [catalog, selectedCategory]);
 
-  // Filtered Catalog Items based on Category + SubCategory + Search Bar
   const filteredCatalog = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
+    // Match at the start of any word so "tea" matches "Tea", "Green Tea", "Black Tea"
+    // but NEVER matches "Steam" or "Teak"!
+    const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const wordStartRegex = q ? new RegExp(`(^|[\\s(/,-])${escaped}`, 'i') : null;
+
     return catalog.filter(item => {
       const itemCat = item.category || 'General';
       const itemSub = item.sub_category || 'General';
@@ -203,17 +193,15 @@ export default function App() {
       const matchesCat = selectedCategory === 'All' || itemCat === selectedCategory;
       const matchesSub = selectedSubCategory === 'All' || itemSub === selectedSubCategory;
       const matchesSearch =
-        q === '' ||
-        item.name.toLowerCase().includes(q) ||
-        itemCat.toLowerCase().includes(q) ||
-        itemSub.toLowerCase().includes(q) ||
-        item.dmart_aliases?.some(alias => alias.toLowerCase().includes(q));
+        !wordStartRegex ||
+        wordStartRegex.test(item.name) ||
+        wordStartRegex.test(itemCat) ||
+        wordStartRegex.test(itemSub);
 
       return matchesCat && matchesSub && matchesSearch;
     });
   }, [catalog, selectedCategory, selectedSubCategory, searchQuery]);
 
-  // Fast Lookup Map of Items Already in This Month's Shopping List
   const selectedMap = useMemo(() => {
     const map = new Map<string, ShoppingListItem>();
     for (const li of shoppingList) {
@@ -222,12 +210,10 @@ export default function App() {
     return map;
   }, [shoppingList]);
 
-  // Toggle or Add Item from Catalog into Monthly Shopping List
   const handleToggleCatalogItem = async (item: MasterItem) => {
     const existing = selectedMap.get(item.name.toLowerCase());
 
     if (existing) {
-      // Remove from this month's list
       setShoppingList(prev => prev.filter(i => i.id !== existing.id));
       await supabase.from('shopping_list').delete().eq('id', existing.id);
       showToast(`Removed ${item.name}`);
@@ -252,7 +238,6 @@ export default function App() {
         setShoppingList(prev => [...prev, data as ShoppingListItem]);
         showToast(`Added ${item.name} to list`);
       } else {
-        // Fallback local state if table lacks column
         setShoppingList(prev => [
           ...prev,
           { ...newEntry, id: `local_${Date.now()}` } as ShoppingListItem
@@ -262,14 +247,12 @@ export default function App() {
     }
   };
 
-  // Update Qty or Unit in Shopping List
   const handleUpdateShoppingItem = async (id: string, qty: number, unit: string) => {
     if (qty <= 0) return;
     setShoppingList(prev => prev.map(it => (it.id === id ? { ...it, qty, unit } : it)));
     await supabase.from('shopping_list').update({ qty, unit }).eq('id', id);
   };
 
-  // Toggle Checked in Shopping List
   const handleToggleChecked = async (item: ShoppingListItem) => {
     const nextState = !item.is_checked;
     setShoppingList(prev =>
@@ -278,13 +261,74 @@ export default function App() {
     await supabase.from('shopping_list').update({ is_checked: nextState }).eq('id', item.id);
   };
 
-  // Delete Item from Shopping List
   const handleDeleteShoppingItem = async (id: string) => {
     setShoppingList(prev => prev.filter(it => it.id !== id));
     await supabase.from('shopping_list').delete().eq('id', id);
   };
 
-  // Add New Custom Item to Master Catalog + Shopping List
+  const handleClearCheckedItems = async () => {
+    const checkedIds = shoppingList.filter(i => i.is_checked).map(i => i.id);
+    if (checkedIds.length === 0) return;
+    if (!window.confirm(`Remove ${checkedIds.length} bought items from this list?`)) return;
+
+    setShoppingList(prev => prev.filter(i => !i.is_checked));
+    await supabase.from('shopping_list').delete().in('id', checkedIds);
+    showToast(`Cleared ${checkedIds.length} checked items`);
+  };
+
+  const handleClearEntireList = async () => {
+    if (shoppingList.length === 0) return;
+    if (!window.confirm(`Delete ALL ${shoppingList.length} items from ${selectedMonth}?`)) return;
+
+    setShoppingList([]);
+    await supabase.from('shopping_list').delete().eq('month_year', selectedMonth);
+    showToast(`Cleared entire list for ${selectedMonth}`);
+  };
+
+  const handleCopyPreviousMonthList = async () => {
+    const [year, month] = selectedMonth.split('-').map(Number);
+    const prevDate = new Date(year, month - 2, 1);
+    const prevMonthStr = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}`;
+
+    const { data, error } = await supabase
+      .from('shopping_list')
+      .select('*')
+      .eq('month_year', prevMonthStr);
+
+    if (error || !data || data.length === 0) {
+      showToast(`No saved list found for ${prevMonthStr}`);
+      return;
+    }
+
+    const existingNames = new Set(shoppingList.map(i => i.item_name.toLowerCase()));
+    const newItemsToInsert = data
+      .filter((item: any) => !existingNames.has(item.item_name.toLowerCase()))
+      .map((item: any) => ({
+        master_item_id: item.master_item_id,
+        item_name: item.item_name,
+        category: item.category,
+        qty: item.qty,
+        unit: item.unit,
+        is_checked: false,
+        month_year: selectedMonth
+      }));
+
+    if (newItemsToInsert.length === 0) {
+      showToast('All items from last month are already in this list!');
+      return;
+    }
+
+    const { data: inserted, error: insertErr } = await supabase
+      .from('shopping_list')
+      .insert(newItemsToInsert)
+      .select();
+
+    if (!insertErr && inserted) {
+      setShoppingList(prev => [...prev, ...(inserted as ShoppingListItem[])]);
+      showToast(`Copied ${inserted.length} items from ${prevMonthStr}!`);
+    }
+  };
+
   const handleAddCustomMasterItem = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!customItemName.trim()) return;
@@ -315,7 +359,6 @@ export default function App() {
     }
   };
 
-  // Handle Receipt Image Upload & AI OCR Scan
   const handleReceiptUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -338,13 +381,11 @@ export default function App() {
     }
   };
 
-  // Save Verified Bill + Self-Learning DMart Aliases to Supabase
   const saveVerifiedBillToDb = async () => {
     if (!draftBill) return;
     setSavingBill(true);
 
     try {
-      // 1. Insert Bill Header
       const { data: billData, error: billErr } = await supabase
         .from('bills')
         .insert([
@@ -364,7 +405,6 @@ export default function App() {
 
       if (billErr) throw billErr;
 
-      // 2. Insert Bill Line Items
       if (billData && draftBill.items.length > 0) {
         const linePayloads = draftBill.items.map(it => ({
           bill_id: billData.id,
@@ -380,7 +420,6 @@ export default function App() {
         await supabase.from('bill_items').insert(linePayloads);
       }
 
-      // 3. Self-Learning Alias Engine: Bind Raw DMart Receipt Text to Master Item
       for (const it of draftBill.items) {
         const master = catalog.find(
           c => c.name.toLowerCase() === it.matched_item_name.toLowerCase()
@@ -398,7 +437,24 @@ export default function App() {
         }
       }
 
-      showToast('Bill saved & DMart aliases learned!');
+      const boughtNames = new Set(
+        draftBill.items.map(it => it.matched_item_name.toLowerCase())
+      );
+      const matchingListIds = shoppingList
+        .filter(li => !li.is_checked && boughtNames.has(li.item_name.toLowerCase()))
+        .map(li => li.id);
+
+      if (matchingListIds.length > 0) {
+        setShoppingList(prev =>
+          prev.map(li => (matchingListIds.includes(li.id) ? { ...li, is_checked: true } : li))
+        );
+        await supabase
+          .from('shopping_list')
+          .update({ is_checked: true })
+          .in('id', matchingListIds);
+      }
+
+      showToast('Bill saved, aliases learned & list updated!');
       setDraftBill(null);
       fetchBillsHistory(selectedMonth);
       fetchMasterCatalog();
@@ -410,7 +466,6 @@ export default function App() {
     }
   };
 
-  // Load Line Items for a Historical Bill
   const handleInspectBill = async (billId: string) => {
     if (activeHistoryBillId === billId) {
       setActiveHistoryBillId(null);
@@ -422,7 +477,6 @@ export default function App() {
     setSelectedHistoryBillItems(data || []);
   };
 
-  // Share Shopping List on WhatsApp
   const shareListOnWhatsApp = () => {
     if (shoppingList.length === 0) return;
     const lines = [`*Mom's DMart Grocery List (${selectedMonth})*`, ''];
@@ -436,14 +490,13 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 pb-24 font-sans text-slate-900">
-      {/* Top App Header */}
       <header className="sticky top-0 z-30 bg-emerald-700 text-white shadow-md px-4 py-3 flex items-center justify-between">
         <div>
           <h1 className="text-lg font-bold tracking-tight flex items-center gap-2">
             🛒 Mom's Grocery & DMart Tracker
           </h1>
           <p className="text-xs text-emerald-100">
-            {catalog.length.toLocaleString()} Official DMart Items Loaded
+            {catalog.length.toLocaleString()} Clean DMart Household Items
           </p>
         </div>
 
@@ -455,22 +508,19 @@ export default function App() {
         />
       </header>
 
-      {/* Toast Notification */}
       {toast && (
         <div className="fixed bottom-20 left-1/2 -translate-x-1/2 z-50 bg-slate-900 text-white text-xs font-medium px-4 py-2.5 rounded-full shadow-lg">
           {toast}
         </div>
       )}
 
-      {/* ==================== TAB 1: SELECT ITEMS (DMART MASTER CATALOG) ==================== */}
       {activeTab === 'select' && (
         <div className="p-3 max-w-3xl mx-auto space-y-3">
-          {/* Search Bar + Custom Item Button */}
           <div className="flex gap-2">
             <div className="relative flex-1">
               <input
                 type="text"
-                placeholder={`Search ${catalog.length.toLocaleString()} DMart items, brands, categories...`}
+                placeholder={`Search ${catalog.length.toLocaleString()} items or brands...`}
                 value={searchQuery}
                 onChange={e => setSearchQuery(e.target.value)}
                 className="w-full pl-9 pr-8 py-2.5 bg-white border border-slate-300 rounded-xl text-sm shadow-sm focus:ring-2 focus:ring-emerald-600 focus:outline-none"
@@ -493,7 +543,6 @@ export default function App() {
             </button>
           </div>
 
-          {/* Tier 1: Main DMart Category Filter Pills */}
           <div className="bg-white p-2.5 rounded-xl border border-slate-200 shadow-sm">
             <div className="flex items-center justify-between mb-1.5">
               <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
@@ -531,7 +580,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* Tier 2: Sub-Category Filter Pills (Always available & dynamically scoped to Category) */}
           <div className="bg-emerald-50/70 p-2.5 rounded-xl border border-emerald-200">
             <div className="flex items-center justify-between mb-1.5">
               <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-800">
@@ -563,7 +611,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* Filter Summary Bar */}
           <div className="flex items-center justify-between px-1 text-xs text-slate-500 font-medium">
             <span>
               Showing <strong>{Math.min(visibleLimit, filteredCatalog.length)}</strong> of{' '}
@@ -574,10 +621,9 @@ export default function App() {
             </span>
           </div>
 
-          {/* Master Catalog Grid */}
           {loadingCatalog ? (
             <div className="py-16 text-center text-slate-500 text-sm">
-              Loading 4,358 DMart products from Supabase...
+              Loading DMart master catalog from Supabase...
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
@@ -626,7 +672,6 @@ export default function App() {
             </div>
           )}
 
-          {/* Load More Button for Smooth Scrolling on Mobile */}
           {filteredCatalog.length > visibleLimit && (
             <button
               onClick={() => setVisibleLimit(prev => prev + 100)}
@@ -638,24 +683,52 @@ export default function App() {
         </div>
       )}
 
-      {/* ==================== TAB 2: MONTHLY SHOPPING LIST ==================== */}
       {activeTab === 'list' && (
         <div className="p-3 max-w-3xl mx-auto space-y-3">
-          <div className="bg-white p-3.5 rounded-xl border border-slate-200 flex items-center justify-between">
-            <div>
-              <h2 className="font-bold text-base">Monthly Grocery List ({selectedMonth})</h2>
-              <p className="text-xs text-slate-500">
-                {shoppingList.filter(i => i.is_checked).length} of {shoppingList.length} items bought
-              </p>
+          <div className="bg-white p-3.5 rounded-xl border border-slate-200 space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="font-bold text-base">Monthly Grocery List ({selectedMonth})</h2>
+                <p className="text-xs text-slate-500">
+                  {shoppingList.filter(i => i.is_checked).length} of {shoppingList.length} items bought • Auto-saved
+                </p>
+              </div>
+              {shoppingList.length > 0 && (
+                <button
+                  onClick={shareListOnWhatsApp}
+                  className="bg-green-600 text-white text-xs font-bold px-3.5 py-2 rounded-xl shadow-sm"
+                >
+                  Share on WhatsApp
+                </button>
+              )}
             </div>
-            {shoppingList.length > 0 && (
+
+            <div className="flex flex-wrap gap-2 pt-2 border-t border-slate-100">
               <button
-                onClick={shareListOnWhatsApp}
-                className="bg-green-600 text-white text-xs font-bold px-3.5 py-2 rounded-xl shadow-sm"
+                onClick={handleCopyPreviousMonthList}
+                className="bg-emerald-50 text-emerald-700 border border-emerald-200 text-xs font-semibold px-3 py-1.5 rounded-lg hover:bg-emerald-100"
               >
-                Share on WhatsApp
+                📋 Copy Last Month's List
               </button>
-            )}
+
+              {shoppingList.some(i => i.is_checked) && (
+                <button
+                  onClick={handleClearCheckedItems}
+                  className="bg-amber-50 text-amber-700 border border-amber-200 text-xs font-semibold px-3 py-1.5 rounded-lg hover:bg-amber-100"
+                >
+                  🧹 Remove Checked ({shoppingList.filter(i => i.is_checked).length})
+                </button>
+              )}
+
+              {shoppingList.length > 0 && (
+                <button
+                  onClick={handleClearEntireList}
+                  className="bg-red-50 text-red-600 border border-red-200 text-xs font-semibold px-3 py-1.5 rounded-lg hover:bg-red-100 ml-auto"
+                >
+                  🗑️ Clear All
+                </button>
+              )}
+            </div>
           </div>
 
           {loadingList ? (
@@ -676,7 +749,9 @@ export default function App() {
                 <div
                   key={item.id}
                   className={`p-3 rounded-xl border flex items-center justify-between gap-2 ${
-                    item.is_checked ? 'bg-slate-100 border-slate-200 opacity-75' : 'bg-white border-slate-200'
+                    item.is_checked
+                      ? 'bg-slate-100 border-slate-200 opacity-75'
+                      : 'bg-white border-slate-200'
                   }`}
                 >
                   <div
@@ -707,7 +782,11 @@ export default function App() {
                       step="0.25"
                       value={item.qty}
                       onChange={e =>
-                        handleUpdateShoppingItem(item.id, parseFloat(e.target.value) || 1, item.unit)
+                        handleUpdateShoppingItem(
+                          item.id,
+                          parseFloat(e.target.value) || 1,
+                          item.unit
+                        )
                       }
                       className="w-16 p-1.5 border rounded-lg text-xs text-center font-semibold"
                     />
@@ -737,13 +816,12 @@ export default function App() {
         </div>
       )}
 
-      {/* ==================== TAB 3: AI DMART RECEIPT SCANNER ==================== */}
       {activeTab === 'scan' && (
         <div className="p-3 max-w-3xl mx-auto space-y-4">
           <div className="bg-white p-5 rounded-xl border border-slate-200 text-center space-y-3">
             <h2 className="font-bold text-base">Scan DMart Bill (AI + Self-Learning)</h2>
             <p className="text-xs text-slate-500">
-              Take a clear photo of your DMart receipt. The app extracts items and automatically teaches your catalog DMart's short names.
+              Take a clear photo of your DMart receipt. The app extracts items, checks them off your monthly list, and teaches your catalog DMart's short names.
             </p>
 
             <label className="inline-block bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold px-5 py-3 rounded-xl shadow cursor-pointer">
@@ -806,7 +884,8 @@ export default function App() {
                     </div>
                     <div className="flex items-center justify-between text-slate-500">
                       <span>
-                        Matched Catalog: <strong className="text-emerald-700">{it.matched_item_name}</strong>
+                        Matched Catalog:{' '}
+                        <strong className="text-emerald-700">{it.matched_item_name}</strong>
                       </span>
                       <span>
                         {it.qty_or_kg} × ₹{it.unit_rate}
@@ -820,7 +899,6 @@ export default function App() {
         </div>
       )}
 
-      {/* ==================== TAB 4: PAST BILLS & EXPENSE HISTORY ==================== */}
       {activeTab === 'history' && (
         <div className="p-3 max-w-3xl mx-auto space-y-3">
           <div className="bg-white p-4 rounded-xl border border-slate-200 flex justify-between items-center">
@@ -877,7 +955,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Modal: Add Custom Item to Master Catalog */}
       {showAddCustomModal && (
         <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
           <form
@@ -948,7 +1025,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Bottom Navigation Bar */}
       <nav className="fixed bottom-0 left-0 right-0 z-40 bg-white border-t border-slate-200 flex justify-around py-2 shadow-lg">
         <button
           onClick={() => setActiveTab('select')}
