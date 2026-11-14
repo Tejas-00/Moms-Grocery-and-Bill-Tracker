@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Moms Grocery &amp; Bills</string>
+    <string name="title_activity_main">Moms Grocery &amp; Bills</string>
+    <string name="package_name">com.sonawane.momsgrocery</string>
+    <string name="custom_url_scheme">com.sonawane.momsgrocery</string>
+</resources>
