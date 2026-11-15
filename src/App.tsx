@@ -31,9 +31,145 @@ interface SavedBill {
   created_at?: string;
 }
 
+// Smart Self-Learning Auto-Categorizer: Infers Category, Sub-Category, Unit & Clean Name
+// from DMart HSN codes + raw receipt text whenever a brand-new product is scanned!
+function inferCategoryAndSubCategory(
+  hsnCode: string = '',
+  rawParticulars: string = '',
+  matchedName: string = ''
+): { category: string; sub_category: string; default_unit: string; default_qty: number; clean_name: string } {
+  const hsn = (hsnCode || '').trim();
+  const text = `${rawParticulars} ${matchedName}`.toUpperCase();
+
+  // Extract unit & qty from raw receipt text (e.g. "-500g", "-1kg", "-300ml", "-1lt")
+  let default_unit = 'pcs';
+  let default_qty = 1;
+  const weightMatch = text.match(/(\d+(?:\.\d+)?)\s*(KG|GM|G|ML|LT|L|NOS|PC|PCS)\b/i);
+  if (weightMatch) {
+    const val = parseFloat(weightMatch[1]) || 1;
+    const u = weightMatch[2].toUpperCase();
+    if (u === 'G' || u === 'GM') {
+      default_unit = 'gm';
+      default_qty = val;
+    } else if (u === 'KG') {
+      default_unit = 'kg';
+      default_qty = val;
+    } else if (u === 'ML') {
+      default_unit = 'ml';
+      default_qty = val;
+    } else if (u === 'L' || u === 'LT') {
+      default_unit = 'L';
+      default_qty = val;
+    } else {
+      default_unit = 'pcs';
+      default_qty = val;
+    }
+  }
+
+  // Clean up raw receipt name if it wasn't matched to an existing generic name
+  let clean_name = matchedName.trim();
+  if (!clean_name || clean_name.toUpperCase() === rawParticulars.trim().toUpperCase()) {
+    clean_name = rawParticulars
+      .replace(/[-–]\s*\d+\s*(kg|gm|g|ml|lt|l|nos|pc|pcs)\b/gi, '')
+      .replace(/\b\d+\s*(kg|gm|g|ml|lt|l|nos|pc|pcs)\b/gi, '')
+      .replace(/^L\s+/i, '') // Strip DMart 'L ' (Loose) prefix
+      .trim()
+      .toLowerCase()
+      .replace(/\b\w/g, ch => ch.toUpperCase());
+  }
+
+  // 1. Keyword-based Category + Sub-Category detection
+  if (/\b(DAL|MOONG|TOOR|CHANA|MASOOR|URAD|RAJMA|MATKI|CHAWLI|WATANA|SOYA)\b/.test(text)) {
+    return { category: 'Grocery', sub_category: 'Dals & Pulses', default_unit: default_unit === 'pcs' ? 'kg' : default_unit, default_qty, clean_name };
+  }
+  if (/\b(ATTA|MAIDA|RAWA|SOOJI|BESAN|FLOUR|BHAGAR|SABUDANA)\b/.test(text)) {
+    return { category: 'Grocery', sub_category: 'Flours & Grains', default_unit: default_unit === 'pcs' ? 'kg' : default_unit, default_qty, clean_name };
+  }
+  if (/\b(RICE|POHA|MURMURA|BASMATI|KOLAM|INDRAYANI)\b/.test(text)) {
+    return { category: 'Grocery', sub_category: 'Rice & Rice Products', default_unit: default_unit === 'pcs' ? 'kg' : default_unit, default_qty, clean_name };
+  }
+  if (/\b(OIL|SOYABEAN|SUNFLOWER|GROUNDNUT OIL|GHEE|VANASPATI)\b/.test(text)) {
+    return { category: 'Grocery', sub_category: 'Cooking Oil & Ghee', default_unit: default_unit === 'pcs' ? 'L' : default_unit, default_qty, clean_name };
+  }
+  if (/\b(BADAM|ALMOND|KAJU|CASHEW|KISHMISH|PISTA|WALNUT|GROUNDNUT|PEANUT|DRY CO|KHOPRA|DATES|KHAJOOR)\b/.test(text)) {
+    return { category: 'Grocery', sub_category: 'Dry Fruits', default_unit: default_unit === 'pcs' ? 'gm' : default_unit, default_qty, clean_name };
+  }
+  if (/\b(MASALA|SPICE|JEERA|AJWA|HALDI|CHILLI|MIRCHI|HING|DHANIYA|GARAM)\b/.test(text)) {
+    return { category: 'Grocery', sub_category: 'Masala & Spices', default_unit: default_unit === 'pcs' ? 'gm' : default_unit, default_qty, clean_name };
+  }
+  if (/\b(SALT|SUGAR|JAGGERY|GUD)\b/.test(text)) {
+    return { category: 'Grocery', sub_category: 'Salt / Sugar / Jaggery', default_unit: default_unit === 'pcs' ? 'kg' : default_unit, default_qty, clean_name };
+  }
+  if (/\b(TEA|COFFEE|CHAI|BOURNVITA|HORLICKS|MILK|PANEER|BUTTER|CHEESE|CURD)\b/.test(text)) {
+    return { category: 'Dairy & Beverages', sub_category: 'Tea, Coffee & Dairy', default_unit, default_qty, clean_name };
+  }
+  if (/\b(BISCUIT|COOKIE|MAGGI|NOODLE|YIPPE|PASTA|KETCHUP|SAUCE|CHOCOLATE|MILKYBAR|IMLI|CANDY|NAMKEEN|CHIPS|POPCORN|PAPAD|PICKLE)\b/.test(text)) {
+    return { category: 'Packaged Food', sub_category: 'Snacks & Packaged Food', default_unit, default_qty, clean_name };
+  }
+  if (/\b(SOAP|SHAMPOO|LOTION|CREAM|TOOTHPASTE|BRUSH|FACE|HAIR|UBTAN|UTANE|TALC|DEO|PAD|SHAVING)\b/.test(text)) {
+    return { category: 'Personal Care', sub_category: 'Skin, Hair & Oral Care', default_unit, default_qty, clean_name };
+  }
+  if (/\b(BROOM|JHADU|MOP|CLEANER|DRAINIT|HARPIC|LIZOL|PHENYL|DETERGENT|SURF|WHEEL|RIN|VIM|EXO|ODONIL|AGARBATTI|DHOOP|BRASS|PITAMBARI)\b/.test(text)) {
+    return { category: 'Home & Kitchen', sub_category: 'Cleaners & Household', default_unit, default_qty, clean_name };
+  }
+  if (/\b(VEST|TRUNK|BRIEF|SOCKS|TOWEL|BEDSHEET|APPAREL|SHIRT|PANT)\b/.test(text)) {
+    return { category: 'Clothing & Accessories', sub_category: 'Innerwear & Apparel', default_unit: 'pcs', default_qty, clean_name };
+  }
+  if (/\b(BULB|LED|EMERGEN|IRON|MIXER|KETTLE|APPLIANCE|BATTERY)\b/.test(text)) {
+    return { category: 'Appliances', sub_category: 'Electricals & Appliances', default_unit: 'pcs', default_qty, clean_name };
+  }
+
+  // 2. Fallback to DMart HSN Code Prefix
+  if (/^(07|08|09|10|11|12|15|17|25)/.test(hsn)) {
+    return { category: 'Grocery', sub_category: 'Staples & Grocery', default_unit, default_qty, clean_name };
+  }
+  if (/^(18|19|20|21|22)/.test(hsn)) {
+    return { category: 'Packaged Food', sub_category: 'Snacks & Packaged Food', default_unit, default_qty, clean_name };
+  }
+  if (/^(33)/.test(hsn)) {
+    return { category: 'Personal Care', sub_category: 'Personal Care', default_unit, default_qty, clean_name };
+  }
+  if (/^(34|38|39|73|96)/.test(hsn)) {
+    return { category: 'Home & Kitchen', sub_category: 'Home & Cleaning', default_unit, default_qty, clean_name };
+  }
+  if (/^(61|62|63)/.test(hsn)) {
+    return { category: 'Clothing & Accessories', sub_category: 'Innerwear & Apparel', default_unit: 'pcs', default_qty, clean_name };
+  }
+  if (/^(84|85)/.test(hsn)) {
+    return { category: 'Appliances', sub_category: 'Electricals & Appliances', default_unit: 'pcs', default_qty, clean_name };
+  }
+
+  return { category: 'Grocery', sub_category: 'General', default_unit, default_qty, clean_name };
+}
+
+// Helper to normalize any OCR date (like "29/10/2026" or "2026-10-29") into strict YYYY-MM-DD and YYYY-MM
+function normalizeBillDateAndMonth(rawDate?: string, rawMonth?: string, fallbackMonth?: string) {
+  const today = new Date().toISOString().slice(0, 10);
+  let bill_date = (rawDate || '').trim();
+
+  // Convert DD/MM/YYYY or DD-MM-YYYY to YYYY-MM-DD
+  const dmyMatch = bill_date.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+  if (dmyMatch) {
+    const dd = dmyMatch[1].padStart(2, '0');
+    const mm = dmyMatch[2].padStart(2, '0');
+    const yyyy = dmyMatch[3];
+    bill_date = `${yyyy}-${mm}-${dd}`;
+  } else if (!/^\d{4}-\d{2}-\d{2}$/.test(bill_date)) {
+    bill_date = today;
+  }
+
+  let month_year = (rawMonth || '').trim();
+  if (!/^\d{4}-\d{2}$/.test(month_year)) {
+    month_year = bill_date.slice(0, 7) || fallbackMonth || today.slice(0, 7);
+  }
+
+  return { bill_date, month_year };
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<'select' | 'list' | 'scan' | 'history'>('select');
   const [selectedMonth, setSelectedMonth] = useState<string>(() => new Date().toISOString().slice(0, 7));
+  const [showAllMonthsHistory, setShowAllMonthsHistory] = useState<boolean>(true);
 
   const [catalog, setCatalog] = useState<MasterItem[]>([]);
   const [loadingCatalog, setLoadingCatalog] = useState<boolean>(true);
@@ -67,7 +203,7 @@ export default function App() {
 
   const showToast = (msg: string) => {
     setToast(msg);
-    setTimeout(() => setToast(null), 2800);
+    setTimeout(() => setToast(null), 3500);
   };
 
   const fetchMasterCatalog = async () => {
@@ -120,15 +256,17 @@ export default function App() {
     }
   };
 
-  const fetchBillsHistory = async (month: string) => {
+  const fetchBillsHistory = async (month: string, allMonths: boolean = showAllMonthsHistory) => {
     try {
-      const { data, error } = await supabase
-        .from('bills')
-        .select('*')
-        .eq('month_year', month)
-        .order('bill_date', { ascending: false });
+      let query = supabase.from('bills').select('*').order('created_at', { ascending: false });
+      if (!allMonths) {
+        query = query.eq('month_year', month);
+      }
+      const { data, error } = await query;
 
-      if (!error && data) {
+      if (error) {
+        console.error('Error fetching bills:', error.message);
+      } else if (data) {
         setSavedBills(data as SavedBill[]);
       }
     } catch (err) {
@@ -142,8 +280,8 @@ export default function App() {
 
   useEffect(() => {
     fetchShoppingList(selectedMonth);
-    fetchBillsHistory(selectedMonth);
-  }, [selectedMonth]);
+    fetchBillsHistory(selectedMonth, showAllMonthsHistory);
+  }, [selectedMonth, showAllMonthsHistory]);
 
   useEffect(() => {
     setVisibleLimit(80);
@@ -181,8 +319,6 @@ export default function App() {
 
   const filteredCatalog = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    // Match at the start of any word so "tea" matches "Tea", "Green Tea", "Black Tea"
-    // but NEVER matches "Steam" or "Teak"!
     const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const wordStartRegex = q ? new RegExp(`(^|[\\s(/,-])${escaped}`, 'i') : null;
 
@@ -372,7 +508,46 @@ export default function App() {
       const parsed = await extractDMartBillFromImage(file, catalog, pct => {
         setScanProgress(pct);
       });
-      setDraftBill(parsed);
+
+      // Normalize date & pre-populate clean generic names for any unmatched items
+      const { bill_date, month_year } = normalizeBillDateAndMonth(
+        parsed.bill_date,
+        parsed.month_year,
+        selectedMonth
+      );
+
+      const enrichedItems = parsed.items.map(it => {
+        const existingMaster = catalog.find(
+          c =>
+            c.name.toLowerCase() === (it.matched_item_name || '').toLowerCase() ||
+            c.dmart_aliases?.some(a => a.toUpperCase() === (it.raw_particulars || '').toUpperCase())
+        );
+
+        if (existingMaster) {
+          return {
+            ...it,
+            matched_item_name: existingMaster.name,
+            master_item_id: existingMaster.id
+          };
+        }
+
+        const inferred = inferCategoryAndSubCategory(
+          it.hsn_code,
+          it.raw_particulars,
+          it.matched_item_name
+        );
+        return {
+          ...it,
+          matched_item_name: inferred.clean_name
+        };
+      });
+
+      setDraftBill({
+        ...parsed,
+        bill_date,
+        month_year,
+        items: enrichedItems
+      });
     } catch (err: any) {
       console.error('Receipt scan failed:', err);
       setScanError(err?.message || 'Failed to scan receipt. Please try a clearer photo.');
@@ -381,64 +556,146 @@ export default function App() {
     }
   };
 
+  // Update a draft bill item's matched generic name before saving
+  const handleDraftItemNameChange = (idx: number, newName: string) => {
+    if (!draftBill) return;
+    const updated = [...draftBill.items];
+    updated[idx] = { ...updated[idx], matched_item_name: newName };
+    setDraftBill({ ...draftBill, items: updated });
+  };
+
+  // FULL SELF-LEARNING + BILL SAVING ENGINE
   const saveVerifiedBillToDb = async () => {
     if (!draftBill) return;
     setSavingBill(true);
 
     try {
-      const { data: billData, error: billErr } = await supabase
-        .from('bills')
-        .insert([
-          {
-            store_name: draftBill.store_name,
-            bill_date: draftBill.bill_date,
-            month_year: draftBill.month_year,
-            bill_number: draftBill.bill_number,
-            total_items_count: draftBill.items.length,
-            total_qty_count: draftBill.total_qty_count,
-            total_amount: draftBill.total_amount,
-            total_savings: draftBill.total_savings
-          }
-        ])
-        .select()
-        .single();
+      const { bill_date, month_year } = normalizeBillDateAndMonth(
+        draftBill.bill_date,
+        draftBill.month_year,
+        selectedMonth
+      );
 
-      if (billErr) throw billErr;
+      let newItemsCreatedCount = 0;
+      let aliasesLearnedCount = 0;
+      const updatedItemsWithIds = [...draftBill.items];
 
-      if (billData && draftBill.items.length > 0) {
-        const linePayloads = draftBill.items.map(it => ({
-          bill_id: billData.id,
-          hsn_code: it.hsn_code,
-          raw_particulars: it.raw_particulars,
-          matched_item_name: it.matched_item_name,
-          master_item_id: it.master_item_id,
-          qty_or_kg: it.qty_or_kg,
-          unit_rate: it.unit_rate,
-          total_value: it.total_value
-        }));
+      // 1. SELF-LEARNING CATALOG ENGINE:
+      //    - If matched item exists in catalog -> append raw_particulars to its dmart_aliases
+      //    - If matched item is NEW -> auto-infer Category & Sub-Category and INSERT into master_items!
+      for (let i = 0; i < updatedItemsWithIds.length; i++) {
+        const it = updatedItemsWithIds[i];
+        const rawAlias = (it.raw_particulars || '').trim().toUpperCase();
+        const targetName = (it.matched_item_name || it.raw_particulars || 'Unknown Item').trim();
 
-        await supabase.from('bill_items').insert(linePayloads);
-      }
-
-      for (const it of draftBill.items) {
-        const master = catalog.find(
-          c => c.name.toLowerCase() === it.matched_item_name.toLowerCase()
+        const existingMaster = catalog.find(
+          c =>
+            c.name.toLowerCase() === targetName.toLowerCase() ||
+            (rawAlias && c.dmart_aliases?.some(a => a.toUpperCase() === rawAlias))
         );
-        if (
-          master &&
-          it.raw_particulars &&
-          !master.dmart_aliases?.includes(it.raw_particulars)
-        ) {
-          const updatedAliases = [...(master.dmart_aliases || []), it.raw_particulars];
-          await supabase
+
+        if (existingMaster) {
+          updatedItemsWithIds[i].master_item_id = existingMaster.id;
+          updatedItemsWithIds[i].matched_item_name = existingMaster.name;
+
+          const currentAliases = existingMaster.dmart_aliases || [];
+          const hasAlias = currentAliases.some(a => a.toUpperCase() === rawAlias);
+
+          if (rawAlias && !hasAlias) {
+            const nextAliases = [...currentAliases, rawAlias];
+            const { error: aliasErr } = await supabase
+              .from('master_items')
+              .update({ dmart_aliases: nextAliases })
+              .eq('id', existingMaster.id);
+
+            if (!aliasErr) {
+              aliasesLearnedCount++;
+              existingMaster.dmart_aliases = nextAliases;
+            }
+          }
+        } else {
+          // Brand-new product not in catalog! Auto-create Category & Sub-Category!
+          const inferred = inferCategoryAndSubCategory(
+            it.hsn_code,
+            it.raw_particulars,
+            targetName
+          );
+          const finalName = targetName || inferred.clean_name;
+          const aliases = Array.from(
+            new Set([finalName.toUpperCase(), ...(rawAlias ? [rawAlias] : [])])
+          );
+
+          const { data: newMaster, error: createErr } = await supabase
             .from('master_items')
-            .update({ dmart_aliases: updatedAliases })
-            .eq('id', master.id);
+            .upsert(
+              {
+                name: finalName,
+                category: inferred.category,
+                sub_category: inferred.sub_category,
+                default_qty: inferred.default_qty,
+                default_unit: inferred.default_unit,
+                dmart_aliases: aliases
+              },
+              { onConflict: 'name' }
+            )
+            .select()
+            .single();
+
+          if (!createErr && newMaster) {
+            newItemsCreatedCount++;
+            updatedItemsWithIds[i].master_item_id = newMaster.id;
+            updatedItemsWithIds[i].matched_item_name = newMaster.name;
+            catalog.push(newMaster as MasterItem);
+          } else if (createErr) {
+            console.warn('Could not auto-create master item:', createErr.message);
+          }
         }
       }
 
+      // 2. SAVE BILL HEADER TO `bills` TABLE
+      const billPayload = {
+        store_name: draftBill.store_name || 'DMart',
+        bill_date,
+        month_year,
+        bill_number: draftBill.bill_number || `BILL-${Date.now()}`,
+        total_items_count: updatedItemsWithIds.length,
+        total_qty_count: Number(draftBill.total_qty_count) || updatedItemsWithIds.length,
+        total_amount: Number(draftBill.total_amount) || 0,
+        total_savings: Number(draftBill.total_savings) || 0
+      };
+
+      const { data: billData, error: billErr } = await supabase
+        .from('bills')
+        .insert([billPayload])
+        .select()
+        .single();
+
+      if (billErr) {
+        throw new Error(`Bills table error: ${billErr.message}`);
+      }
+
+      // 3. SAVE LINE ITEMS TO `bill_items` TABLE
+      if (billData && updatedItemsWithIds.length > 0) {
+        const linePayloads = updatedItemsWithIds.map(it => ({
+          bill_id: billData.id,
+          hsn_code: it.hsn_code || '',
+          raw_particulars: it.raw_particulars || '',
+          matched_item_name: it.matched_item_name || it.raw_particulars || '',
+          master_item_id: it.master_item_id || null,
+          qty_or_kg: Number(it.qty_or_kg) || 1,
+          unit_rate: Number(it.unit_rate) || 0,
+          total_value: Number(it.total_value) || 0
+        }));
+
+        const { error: linesErr } = await supabase.from('bill_items').insert(linePayloads);
+        if (linesErr) {
+          console.error('Warning saving bill_items:', linesErr.message);
+        }
+      }
+
+      // 4. AUTO-CHECKOFF MATCHING ITEMS IN CURRENT SHOPPING LIST
       const boughtNames = new Set(
-        draftBill.items.map(it => it.matched_item_name.toLowerCase())
+        updatedItemsWithIds.map(it => (it.matched_item_name || '').toLowerCase())
       );
       const matchingListIds = shoppingList
         .filter(li => !li.is_checked && boughtNames.has(li.item_name.toLowerCase()))
@@ -454,12 +711,19 @@ export default function App() {
           .in('id', matchingListIds);
       }
 
-      showToast('Bill saved, aliases learned & list updated!');
+      // Refresh state & switch to History tab
+      setSelectedMonth(month_year);
+      await fetchMasterCatalog();
+      await fetchBillsHistory(month_year, showAllMonthsHistory);
+
+      showToast(
+        `Saved Bill! +${newItemsCreatedCount} new items & +${aliasesLearnedCount} aliases learned!`
+      );
       setDraftBill(null);
-      fetchBillsHistory(selectedMonth);
-      fetchMasterCatalog();
       setActiveTab('history');
     } catch (err: any) {
+      console.error('Save bill error:', err);
+      alert(`Could not save bill to Supabase:\n${err.message}`);
       showToast(`Save failed: ${err.message}`);
     } finally {
       setSavingBill(false);
@@ -475,6 +739,74 @@ export default function App() {
     setActiveHistoryBillId(billId);
     const { data } = await supabase.from('bill_items').select('*').eq('bill_id', billId);
     setSelectedHistoryBillItems(data || []);
+  };
+
+  const handleDeleteBill = async (billId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!window.confirm('Delete this bill and undo its self-learned items/aliases?')) return;
+
+    try {
+      // 1. Fetch line items of the bill being deleted
+      const { data: billLines } = await supabase
+        .from('bill_items')
+        .select('*')
+        .eq('bill_id', billId);
+
+      // 2. Fetch remaining line items from OTHER bills so we don't delete shared aliases
+      const { data: otherBillLines } = await supabase
+        .from('bill_items')
+        .select('raw_particulars, matched_item_name')
+        .neq('bill_id', billId);
+
+      const stillUsedAliases = new Set(
+        (otherBillLines || []).map(l => (l.raw_particulars || '').trim().toUpperCase())
+      );
+
+      // 3. Roll back self-learned aliases & auto-created items
+      if (billLines && billLines.length > 0) {
+        for (const line of billLines) {
+          const rawAlias = (line.raw_particulars || '').trim().toUpperCase();
+          const master = catalog.find(
+            c =>
+              c.id === line.master_item_id ||
+              c.name.toLowerCase() === (line.matched_item_name || '').toLowerCase()
+          );
+
+          if (master && rawAlias && !stillUsedAliases.has(rawAlias)) {
+            const updatedAliases = (master.dmart_aliases || []).filter(
+              a => a.toUpperCase() !== rawAlias
+            );
+
+            // If the only remaining alias is the item's own name AND it was auto-created from this raw text,
+            // delete the auto-created item completely; otherwise just remove the learned alias.
+            const wasAutoCreatedFromBill =
+              updatedAliases.length === 0 ||
+              (updatedAliases.length === 1 &&
+                updatedAliases[0].toUpperCase() === master.name.toUpperCase() &&
+                rawAlias.includes(master.name.toUpperCase()));
+
+            if (wasAutoCreatedFromBill) {
+              await supabase.from('master_items').delete().eq('id', master.id);
+            } else {
+              await supabase
+                .from('master_items')
+                .update({ dmart_aliases: updatedAliases })
+                .eq('id', master.id);
+            }
+          }
+        }
+      }
+
+      // 4. Delete the bill and its line items
+      await supabase.from('bill_items').delete().eq('bill_id', billId);
+      await supabase.from('bills').delete().eq('id', billId);
+
+      setSavedBills(prev => prev.filter(b => b.id !== billId));
+      await fetchMasterCatalog();
+      showToast('Bill & self-learned items removed!');
+    } catch (err: any) {
+      showToast(`Delete failed: ${err.message}`);
+    }
   };
 
   const shareListOnWhatsApp = () => {
@@ -514,13 +846,14 @@ export default function App() {
         </div>
       )}
 
+      {/* ==================== TAB 1: CATALOG ==================== */}
       {activeTab === 'select' && (
         <div className="p-3 max-w-3xl mx-auto space-y-3">
           <div className="flex gap-2">
             <div className="relative flex-1">
               <input
                 type="text"
-                placeholder={`Search ${catalog.length.toLocaleString()} items or brands...`}
+                placeholder={`Search ${catalog.length.toLocaleString()} items...`}
                 value={searchQuery}
                 onChange={e => setSearchQuery(e.target.value)}
                 className="w-full pl-9 pr-8 py-2.5 bg-white border border-slate-300 rounded-xl text-sm shadow-sm focus:ring-2 focus:ring-emerald-600 focus:outline-none"
@@ -683,6 +1016,7 @@ export default function App() {
         </div>
       )}
 
+      {/* ==================== TAB 2: SHOPPING LIST ==================== */}
       {activeTab === 'list' && (
         <div className="p-3 max-w-3xl mx-auto space-y-3">
           <div className="bg-white p-3.5 rounded-xl border border-slate-200 space-y-3">
@@ -816,12 +1150,13 @@ export default function App() {
         </div>
       )}
 
+      {/* ==================== TAB 3: SCAN BILL (SELF-LEARNING) ==================== */}
       {activeTab === 'scan' && (
         <div className="p-3 max-w-3xl mx-auto space-y-4">
           <div className="bg-white p-5 rounded-xl border border-slate-200 text-center space-y-3">
-            <h2 className="font-bold text-base">Scan DMart Bill (AI + Self-Learning)</h2>
+            <h2 className="font-bold text-base">Scan DMart Bill (AI + Auto Self-Learning)</h2>
             <p className="text-xs text-slate-500">
-              Take a clear photo of your DMart receipt. The app extracts items, checks them off your monthly list, and teaches your catalog DMart's short names.
+              Upload a DMart receipt photo. Known items learn new store aliases, and brand-new products automatically create their own Category & Sub-Category in your Catalog!
             </p>
 
             <label className="inline-block bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold px-5 py-3 rounded-xl shadow cursor-pointer">
@@ -863,95 +1198,153 @@ export default function App() {
                     Verified Bill: {draftBill.store_name} ({draftBill.bill_date})
                   </h3>
                   <p className="text-xs text-slate-500">
-                    {draftBill.items.length} items • Total: ₹{draftBill.total_amount.toFixed(2)}
+                    {draftBill.items.length} items • Total: ₹{Number(draftBill.total_amount || 0).toFixed(2)} • Month: {draftBill.month_year}
                   </p>
                 </div>
                 <button
                   onClick={saveVerifiedBillToDb}
                   disabled={savingBill}
-                  className="bg-emerald-600 text-white text-xs font-bold px-4 py-2 rounded-lg shadow"
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-4 py-2 rounded-lg shadow"
                 >
-                  {savingBill ? 'Saving...' : 'Save Verified Bill ✓'}
+                  {savingBill ? 'Saving to DB...' : 'Save Verified Bill ✓'}
                 </button>
               </div>
 
               <div className="space-y-2 max-h-96 overflow-y-auto">
-                {draftBill.items.map((it, idx) => (
-                  <div key={idx} className="p-2.5 bg-slate-50 rounded-lg border text-xs space-y-1">
-                    <div className="flex justify-between font-bold text-slate-800">
-                      <span>Raw Bill: {it.raw_particulars}</span>
-                      <span>₹{it.total_value}</span>
+                {draftBill.items.map((it, idx) => {
+                  const existsInCatalog = catalog.some(
+                    c => c.name.toLowerCase() === (it.matched_item_name || '').toLowerCase()
+                  );
+                  const autoCat = inferCategoryAndSubCategory(
+                    it.hsn_code,
+                    it.raw_particulars,
+                    it.matched_item_name
+                  );
+
+                  return (
+                    <div key={idx} className="p-2.5 bg-slate-50 rounded-lg border text-xs space-y-1.5">
+                      <div className="flex justify-between font-bold text-slate-800">
+                        <span>Raw Receipt: {it.raw_particulars}</span>
+                        <span>
+                          {it.qty_or_kg} × ₹{it.unit_rate} = ₹{it.total_value}
+                        </span>
+                      </div>
+
+                      <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                        <div className="flex items-center gap-1.5 flex-1 min-w-[200px]">
+                          <span className="text-slate-500 shrink-0">Catalog Name:</span>
+                          <input
+                            type="text"
+                            value={it.matched_item_name}
+                            onChange={e => handleDraftItemNameChange(idx, e.target.value)}
+                            className="px-2 py-1 border rounded bg-white font-semibold text-emerald-800 text-xs flex-1"
+                          />
+                        </div>
+
+                        {existsInCatalog ? (
+                          <span className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded font-semibold">
+                            ✓ In Catalog (Learns Alias)
+                          </span>
+                        ) : (
+                          <span className="text-[10px] bg-amber-100 text-amber-800 px-2 py-0.5 rounded font-semibold">
+                            ✨ New Item → {autoCat.category} / {autoCat.sub_category}
+                          </span>
+                        )}
+                      </div>
                     </div>
-                    <div className="flex items-center justify-between text-slate-500">
-                      <span>
-                        Matched Catalog:{' '}
-                        <strong className="text-emerald-700">{it.matched_item_name}</strong>
-                      </span>
-                      <span>
-                        {it.qty_or_kg} × ₹{it.unit_rate}
-                      </span>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}
         </div>
       )}
 
+      {/* ==================== TAB 4: HISTORY ==================== */}
       {activeTab === 'history' && (
         <div className="p-3 max-w-3xl mx-auto space-y-3">
-          <div className="bg-white p-4 rounded-xl border border-slate-200 flex justify-between items-center">
+          <div className="bg-white p-4 rounded-xl border border-slate-200 flex flex-wrap justify-between items-center gap-2">
             <div>
-              <h2 className="font-bold text-base">Bills History ({selectedMonth})</h2>
-              <p className="text-xs text-slate-500">{savedBills.length} bills recorded</p>
+              <h2 className="font-bold text-base">
+                Saved Bills History ({showAllMonthsHistory ? 'All Months' : selectedMonth})
+              </h2>
+              <div className="flex items-center gap-2 mt-1">
+                <span className="text-xs text-slate-500">{savedBills.length} bills recorded</span>
+                <button
+                  onClick={() => setShowAllMonthsHistory(prev => !prev)}
+                  className="text-[11px] bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded font-semibold"
+                >
+                  {showAllMonthsHistory ? `Filter by ${selectedMonth} Only` : 'Show All Months'}
+                </button>
+              </div>
             </div>
             <div className="text-right">
-              <p className="text-xs text-slate-500">Monthly Spend</p>
+              <p className="text-xs text-slate-500">Total Spend</p>
               <p className="text-lg font-extrabold text-emerald-700">
                 ₹{savedBills.reduce((s, b) => s + (Number(b.total_amount) || 0), 0).toFixed(2)}
               </p>
             </div>
           </div>
 
-          {savedBills.map(bill => (
-            <div key={bill.id} className="bg-white p-3.5 rounded-xl border border-slate-200 space-y-2">
-              <div
-                onClick={() => handleInspectBill(bill.id)}
-                className="flex justify-between items-center cursor-pointer"
-              >
-                <div>
-                  <p className="font-bold text-sm text-slate-800">
-                    {bill.store_name} — {bill.bill_date}
-                  </p>
-                  <p className="text-xs text-slate-500">
-                    {bill.total_items_count} items • Saved ₹{bill.total_savings || 0}
-                  </p>
-                </div>
-                <div className="text-right">
-                  <p className="font-bold text-sm text-emerald-700">₹{bill.total_amount}</p>
-                  <span className="text-[10px] text-blue-600 font-semibold">
-                    {activeHistoryBillId === bill.id ? 'Hide Items ▲' : 'View Items ▼'}
-                  </span>
-                </div>
-              </div>
-
-              {activeHistoryBillId === bill.id && selectedHistoryBillItems && (
-                <div className="border-t pt-2 space-y-1 text-xs">
-                  {selectedHistoryBillItems.map((bi, i) => (
-                    <div key={i} className="flex justify-between py-1 border-b border-slate-100">
-                      <span className="font-medium text-slate-700">
-                        {bi.matched_item_name || bi.raw_particulars}
-                      </span>
-                      <span className="text-slate-500">
-                        {bi.qty_or_kg} × ₹{bi.unit_rate} = <strong>₹{bi.total_value}</strong>
+          {savedBills.length === 0 ? (
+            <div className="bg-white p-8 rounded-xl border text-center text-sm text-slate-400">
+              No saved bills found. Scan a DMart receipt in Tab 3 and tap "Save Verified Bill ✓"!
+            </div>
+          ) : (
+            savedBills.map(bill => (
+              <div key={bill.id} className="bg-white p-3.5 rounded-xl border border-slate-200 space-y-2">
+                <div
+                  onClick={() => handleInspectBill(bill.id)}
+                  className="flex justify-between items-center cursor-pointer"
+                >
+                  <div>
+                    <p className="font-bold text-sm text-slate-800">
+                      {bill.store_name} — {bill.bill_date}
+                    </p>
+                    <p className="text-xs text-slate-500">
+                      {bill.total_items_count} items • Month: {bill.month_year} • Saved ₹
+                      {bill.total_savings || 0}
+                    </p>
+                  </div>
+                  <div className="text-right flex items-center gap-3">
+                    <div>
+                      <p className="font-bold text-sm text-emerald-700">
+                        ₹{Number(bill.total_amount || 0).toFixed(2)}
+                      </p>
+                      <span className="text-[10px] text-blue-600 font-semibold">
+                        {activeHistoryBillId === bill.id ? 'Hide Items ▲' : 'View Items ▼'}
                       </span>
                     </div>
-                  ))}
+                    <button
+                      onClick={e => handleDeleteBill(bill.id, e)}
+                      className="text-red-400 hover:text-red-600 text-xs font-bold p-1"
+                      title="Delete Bill"
+                    >
+                      🗑️
+                    </button>
+                  </div>
                 </div>
-              )}
-            </div>
-          ))}
+
+                {activeHistoryBillId === bill.id && selectedHistoryBillItems && (
+                  <div className="border-t pt-2 space-y-1 text-xs">
+                    {selectedHistoryBillItems.map((bi, i) => (
+                      <div key={i} className="flex justify-between py-1 border-b border-slate-100">
+                        <span className="font-medium text-slate-700">
+                          {bi.matched_item_name || bi.raw_particulars}
+                          <span className="text-[10px] text-slate-400 ml-1">
+                            ({bi.raw_particulars})
+                          </span>
+                        </span>
+                        <span className="text-slate-500">
+                          {bi.qty_or_kg} × ₹{bi.unit_rate} = <strong>₹{bi.total_value}</strong>
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))
+          )}
         </div>
       )}
 
@@ -1033,7 +1426,7 @@ export default function App() {
           }`}
         >
           <span className="text-lg">🏬</span>
-          <span>1. Catalog</span>
+          <span>1. Catalog ({catalog.length})</span>
         </button>
         <button
           onClick={() => setActiveTab('list')}
@@ -1060,7 +1453,7 @@ export default function App() {
           }`}
         >
           <span className="text-lg">📊</span>
-          <span>4. History</span>
+          <span>4. History ({savedBills.length})</span>
         </button>
       </nav>
     </div>
